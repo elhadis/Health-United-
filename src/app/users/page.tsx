@@ -247,11 +247,11 @@ export default function UsersPage() {
             قائمة المستخدمين
           </CardTitle>
         </CardHeader>
-        <CardContent className="overflow-x-auto p-0">
+        <CardContent className="table-scroll overflow-x-auto p-0">
           {isLoading ? (
             <p className="p-6 text-sm text-slate-500">جاري التحميل...</p>
           ) : (
-            <table className="w-full min-w-[800px] text-sm">
+            <table className="w-full min-w-[720px] text-sm">
               <thead className="bg-slate-50 text-slate-500">
                 <tr>
                   <th className="px-4 py-3 text-right font-medium">الاسم</th>

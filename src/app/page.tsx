@@ -94,8 +94,8 @@ export default function HomePage() {
         </div>
       }
     >
-      <div className="mb-8 overflow-hidden rounded-2xl bg-gradient-to-l from-secondary via-slate-800 to-teal-900 p-6 text-white shadow-lg">
-        <div className="flex flex-wrap items-center justify-between gap-4">
+      <div className="mb-6 overflow-hidden rounded-2xl bg-gradient-to-l from-secondary via-slate-800 to-teal-900 p-4 text-white shadow-lg sm:mb-8 sm:p-6">
+        <div className="flex flex-col gap-4 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
           <div>
             <div className="mb-3 flex items-center gap-3">
               <div className="flex h-12 w-12 items-center justify-center overflow-hidden rounded-xl bg-white p-1">
@@ -106,12 +106,12 @@ export default function HomePage() {
                 <p className="text-xs text-slate-400">{APP_TAGLINE}</p>
               </div>
             </div>
-            <h2 className="text-2xl font-bold md:text-3xl">{COMPANY_NAME_AR}</h2>
+            <h2 className="text-xl font-bold sm:text-2xl md:text-3xl">{COMPANY_NAME_AR}</h2>
             <p className="mt-2 max-w-xl text-sm text-slate-300">
               مبيعات، مخزون، تحويلات، وتقارير أرباح — مع مزامنة تلقائية عند عودة الإنترنت.
             </p>
           </div>
-          <Button asChild size="lg" className="bg-primary hover:bg-teal-600">
+          <Button asChild size="lg" className="w-full bg-primary hover:bg-teal-600 sm:w-auto">
             <Link href="/pos">
               <ShoppingCart className="h-4 w-4" />
               ابدأ البيع الآن

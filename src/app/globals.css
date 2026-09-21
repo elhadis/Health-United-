@@ -3,7 +3,7 @@
 @theme inline {
   --color-primary: #0d9488;
   --color-secondary: #0f172a;
-  --color-background: #f8fafc;
+  --color-background: #f1f5f9;
   --color-danger: #ef4444;
   --color-warning: #f59e0b;
   --color-success: #10b981;
@@ -17,13 +17,19 @@
 
 html {
   direction: rtl;
+  -webkit-text-size-adjust: 100%;
+  scroll-behavior: smooth;
 }
 
 body {
-  background: var(--color-background);
+  background:
+    radial-gradient(ellipse 80% 50% at 100% -20%, rgba(13, 148, 136, 0.08), transparent),
+    radial-gradient(ellipse 60% 40% at 0% 100%, rgba(15, 23, 42, 0.04), transparent),
+    var(--color-background);
   color: var(--color-secondary);
   font-family: var(--font-sans);
   min-height: 100vh;
+  line-height: 1.6;
 }
 
 ::-webkit-scrollbar {
@@ -36,8 +42,19 @@ body {
   border-radius: 999px;
 }
 
+::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
+
 ::-webkit-scrollbar-track {
   background: transparent;
+}
+
+/* Utility: prevent horizontal page blowouts on small screens */
+.table-scroll {
+  width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
 }
 
 .print-only {
@@ -61,5 +78,11 @@ body {
     display: block !important;
     padding: 0 !important;
     margin: 0 !important;
+  }
+}
+
+@media (max-width: 640px) {
+  .print-document {
+    overflow-x: auto;
   }
 }

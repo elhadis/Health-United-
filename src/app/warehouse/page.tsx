@@ -314,8 +314,8 @@ export default function WarehousePage() {
         </Card>
       </div>
 
-      <div className="mb-4 flex flex-wrap items-center gap-3">
-        <div className="relative min-w-[240px] flex-1">
+      <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
+        <div className="relative min-w-0 flex-1 sm:min-w-[240px]">
           <Search className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
           <Input
             className="pr-10"
@@ -348,11 +348,11 @@ export default function WarehousePage() {
             سجل الدفعات والمخزون
           </CardTitle>
         </CardHeader>
-        <CardContent className="overflow-x-auto p-0">
+        <CardContent className="table-scroll overflow-x-auto p-0">
           {isLoading ? (
             <p className="p-6 text-sm text-slate-500">جاري التحميل...</p>
           ) : (
-            <table className="w-full min-w-[900px] text-sm">
+            <table className="w-full min-w-[720px] text-sm">
               <thead className="bg-slate-50 text-slate-500">
                 <tr>
                   <th className="px-4 py-3 text-right font-medium">المنتج</th>

@@ -238,7 +238,7 @@ export default function ReportsPage() {
       title="التقارير والأرباح"
       subtitle="مبيعات، هامش الربح الفعلي، تنبيهات المخزون والصلاحية"
       actions={
-        <div className="flex gap-2">
+        <div className="flex w-full flex-wrap gap-2 sm:w-auto">
           {(
             [
               ["daily", "يومي"],
@@ -248,6 +248,7 @@ export default function ReportsPage() {
           ).map(([key, label]) => (
             <Button
               key={key}
+              size="sm"
               variant={range === key ? "default" : "outline"}
               className={
                 range === key
@@ -260,12 +261,13 @@ export default function ReportsPage() {
             </Button>
           ))}
           <Button
+            size="sm"
             variant="outline"
             className="border-white/20 bg-white/5 text-white hover:bg-white/10"
             onClick={() => window.print()}
           >
             <Printer className="h-4 w-4" />
-            طباعة
+            <span className="hidden xs:inline sm:inline">طباعة</span>
           </Button>
         </div>
       }
@@ -606,7 +608,7 @@ export default function ReportsPage() {
           if (!open) setDrillModal(null);
         }}
       >
-        <DialogContent className="max-h-[85vh] max-w-3xl overflow-hidden">
+                <DialogContent className="max-h-[85vh] max-w-3xl overflow-hidden p-4 sm:p-6">
           <DialogHeader>
             <DialogTitle>
               {drillModal === "sales" && `تفاصيل المبيعات — ${rangeLabel(range)}`}

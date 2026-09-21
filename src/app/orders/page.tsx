@@ -433,7 +433,7 @@ export default function OrdersPage() {
         </p>
       )}
 
-      <div className="mb-6 grid gap-3 md:grid-cols-4 no-print">
+      <div className="mb-6 grid gap-3 sm:grid-cols-2 md:grid-cols-4 no-print">
         {(["PENDING", "APPROVED", "DISPATCHED", "CONFIRMED"] as const).map((s) => {
           const meta = statusMeta[s];
           const Icon = meta.icon;

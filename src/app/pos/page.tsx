@@ -279,8 +279,8 @@ export default function POSPage() {
         </Badge>
       }
     >
-      <div className="grid gap-6 lg:grid-cols-5 no-print">
-        <div className="space-y-4 lg:col-span-3">
+      <div className="grid gap-4 lg:grid-cols-5 lg:gap-6 no-print">
+        <div className="order-2 space-y-4 lg:order-1 lg:col-span-3">
           <div className="relative">
             <Search className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
             <Input
@@ -384,8 +384,8 @@ export default function POSPage() {
           )}
         </div>
 
-        <div className="lg:col-span-2">
-          <Card className="sticky top-24 overflow-hidden">
+        <div className="order-1 lg:order-2 lg:col-span-2">
+          <Card className="sticky top-[4.5rem] overflow-hidden shadow-md sm:top-24">
             <CardHeader className="border-b border-slate-100 bg-secondary text-white">
               <CardTitle className="flex items-center gap-2 text-white">
                 <ShoppingCart className="h-5 w-5" />

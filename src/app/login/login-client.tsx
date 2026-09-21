@@ -50,19 +50,24 @@ export default function LoginClient() {
   };
 
   return (
-    <div className="relative flex min-h-screen items-center justify-center overflow-hidden bg-gradient-to-bl from-slate-900 via-slate-800 to-teal-900 px-4">
+    <div className="relative flex min-h-screen items-center justify-center overflow-hidden bg-gradient-to-bl from-slate-900 via-slate-800 to-teal-900 px-3 py-8 sm:px-4">
       <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_20%_20%,rgba(13,148,136,0.25),transparent_40%),radial-gradient(circle_at_80%_80%,rgba(99,102,241,0.15),transparent_35%)]" />
       <motion.div
-        initial={{ opacity: 0, y: 10 }}
+        initial={{ opacity: 0, y: 12 }}
         animate={{ opacity: 1, y: 0 }}
-        className="relative z-10 w-full max-w-md rounded-2xl border border-white/10 bg-white/95 p-8 shadow-2xl backdrop-blur"
+        transition={{ duration: 0.35, ease: "easeOut" }}
+        className="relative z-10 w-full max-w-md rounded-2xl border border-white/10 bg-white/95 p-5 shadow-2xl backdrop-blur sm:p-8"
       >
-        <div className="mb-8 text-center">
-          <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center overflow-hidden rounded-2xl bg-white p-1.5 shadow-lg shadow-teal-600/20">
-            <BrandLogo size={56} className="h-12 w-12" priority />
+        <div className="mb-6 text-center sm:mb-8">
+          <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center overflow-hidden rounded-2xl bg-white p-1.5 shadow-lg shadow-teal-600/20 ring-1 ring-teal-100 sm:h-16 sm:w-16">
+            <BrandLogo size={56} className="h-11 w-11 sm:h-12 sm:w-12" priority />
           </div>
-          <h1 className="text-2xl font-bold text-secondary">{COMPANY_NAME_AR}</h1>
-          <p className="mt-0.5 text-xs font-medium text-slate-500">{COMPANY_NAME_EN}</p>
+          <h1 className="text-xl font-bold text-secondary sm:text-2xl">
+            {COMPANY_NAME_AR}
+          </h1>
+          <p className="mt-0.5 text-xs font-medium text-slate-500">
+            {COMPANY_NAME_EN}
+          </p>
           <p className="mt-2 text-sm text-slate-500">{APP_TAGLINE}</p>
         </div>
 

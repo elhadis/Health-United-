@@ -19,13 +19,13 @@ export function AppShell({
   return (
     <div className="min-h-screen bg-background">
       <Sidebar />
-      <div className="mr-64 min-h-screen">
+      <div className="min-h-screen transition-[margin] duration-300 ease-out lg:mr-64">
         <Header title={title} subtitle={subtitle} actions={actions} />
         <motion.main
-          initial={{ opacity: 0, y: 10 }}
+          initial={{ opacity: 0, y: 8 }}
           animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.25 }}
-          className="p-6"
+          transition={{ duration: 0.28, ease: "easeOut" }}
+          className="mx-auto w-full max-w-[1600px] p-3 sm:p-5 lg:p-6"
         >
           {children}
         </motion.main>
