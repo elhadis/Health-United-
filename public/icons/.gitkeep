@@ -1,0 +1,2 @@
+/* Minimal placeholder PWA icons as SVG-converted feel via PNG data is heavy;
+   using simple colored canvases generated at build isn't available — ship SVG favicon. */
