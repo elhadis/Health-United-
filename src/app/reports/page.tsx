@@ -36,6 +36,7 @@ import {
 } from "@/components/ui/dialog";
 import { ConfirmDeleteDialog } from "@/components/ui/confirm-delete-dialog";
 import { PrintBrandHeader } from "@/components/branding/print-brand-header";
+import { FinanceTabs } from "@/components/reports/finance-tabs";
 import { useAuthStore, canDeleteRecords } from "@/lib/stores/auth-store";
 import { cn, formatCurrency, formatDate } from "@/lib/utils";
 
@@ -154,6 +155,7 @@ export default function ReportsPage() {
   const isSuperAdmin = user?.role === "ADMINISTRATOR";
   const allowDelete = canDeleteRecords(user?.role);
   const [range, setRange] = useState<RangeKey>("weekly");
+  const [section, setSection] = useState<"analytics" | "finance">("analytics");
   const [drillModal, setDrillModal] = useState<DrillModal>(null);
   const [deleteSaleId, setDeleteSaleId] = useState<string | null>(null);
   const [deleteMsg, setDeleteMsg] = useState<string | null>(null);
@@ -272,9 +274,32 @@ export default function ReportsPage() {
         </div>
       }
     >
-      {isLoading || !summary ? (
+      {isSuperAdmin && (
+        <div className="mb-4 flex flex-wrap gap-2 no-print">
+          <Button
+            type="button"
+            size="sm"
+            variant={section === "analytics" ? "default" : "outline"}
+            onClick={() => setSection("analytics")}
+          >
+            لوحة التحليلات
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            variant={section === "finance" ? "default" : "outline"}
+            onClick={() => setSection("finance")}
+          >
+            المدفوعات والفواتير
+          </Button>
+        </div>
+      )}
+
+      {isSuperAdmin && section === "finance" && <FinanceTabs />}
+
+      {section === "analytics" && (isLoading || !summary) ? (
         <p className="text-sm text-slate-500">جاري تحميل التقارير...</p>
-      ) : (
+      ) : section === "analytics" && summary ? (
         <div className="print-document space-y-6">
           <PrintBrandHeader
             documentTitle={
@@ -599,7 +624,7 @@ export default function ReportsPage() {
             </Card>
           )}
         </div>
-      )}
+      ) : null}
 
       {/* Drill-down modals — ADMINISTRATOR only */}
       <Dialog

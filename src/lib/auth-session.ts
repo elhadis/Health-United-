@@ -113,6 +113,13 @@ export function canAccessPath(role: Role, pathname: string): boolean {
     return role === "ADMINISTRATOR";
   }
 
+  if (
+    pathname.startsWith("/api/payments") ||
+    pathname.startsWith("/api/suppliers")
+  ) {
+    return role === "ADMINISTRATOR";
+  }
+
   if (pathname.startsWith("/api/pharmacies")) {
     return role === "ADMINISTRATOR" || role === "ADMIN";
   }

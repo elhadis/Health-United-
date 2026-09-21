@@ -53,3 +53,11 @@ export async function requireAdministratorForDelete(): Promise<
   }
   return { ok: true, user };
 }
+
+/** Super-admin gate for supplier payments / official PDF features. */
+export async function requireAdministrator(): Promise<
+  | { ok: true; user: SessionUser }
+  | { ok: false; response: NextResponse }
+> {
+  return requireAdministratorForDelete();
+}
