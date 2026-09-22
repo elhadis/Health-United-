@@ -37,6 +37,7 @@ import {
 import { ConfirmDeleteDialog } from "@/components/ui/confirm-delete-dialog";
 import { PrintBrandHeader } from "@/components/branding/print-brand-header";
 import { FinanceTabs } from "@/components/reports/finance-tabs";
+import { ShiftReportsTab } from "@/components/reports/shift-reports-tab";
 import { useAuthStore, canDeleteRecords } from "@/lib/stores/auth-store";
 import { cn, formatCurrency, formatDate } from "@/lib/utils";
 
@@ -155,7 +156,9 @@ export default function ReportsPage() {
   const isSuperAdmin = user?.role === "ADMINISTRATOR";
   const allowDelete = canDeleteRecords(user?.role);
   const [range, setRange] = useState<RangeKey>("weekly");
-  const [section, setSection] = useState<"analytics" | "finance">("analytics");
+  const [section, setSection] = useState<"analytics" | "finance" | "shifts">(
+    "analytics"
+  );
   const [drillModal, setDrillModal] = useState<DrillModal>(null);
   const [deleteSaleId, setDeleteSaleId] = useState<string | null>(null);
   const [deleteMsg, setDeleteMsg] = useState<string | null>(null);
@@ -292,10 +295,19 @@ export default function ReportsPage() {
           >
             المدفوعات والفواتير
           </Button>
+          <Button
+            type="button"
+            size="sm"
+            variant={section === "shifts" ? "default" : "outline"}
+            onClick={() => setSection("shifts")}
+          >
+            تقارير الورديات
+          </Button>
         </div>
       )}
 
       {isSuperAdmin && section === "finance" && <FinanceTabs />}
+      {isSuperAdmin && section === "shifts" && <ShiftReportsTab />}
 
       {section === "analytics" && (isLoading || !summary) ? (
         <p className="text-sm text-slate-500">جاري تحميل التقارير...</p>

@@ -23,6 +23,7 @@ import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { PrintBrandHeader } from "@/components/branding/print-brand-header";
+import { PosShiftPanel } from "@/components/pos/shift-panel";
 import { useCartStore } from "@/lib/stores/cart-store";
 import { useAuthStore } from "@/lib/stores/auth-store";
 import { useNetworkStore } from "@/lib/stores/network-store";
@@ -117,11 +118,26 @@ export default function POSPage() {
 
   const user = useAuthStore((s) => s.user);
   const { isOnline, setPendingCount } = useNetworkStore();
+  const requireShift = user?.role === "USER";
 
   const { data: products = [], isFetching } = useQuery({
     queryKey: ["pos-products", deferredQuery],
     queryFn: () => fetchProducts(deferredQuery),
   });
+
+  const { data: activeShift } = useQuery({
+    queryKey: ["current-shift"],
+    queryFn: async () => {
+      const res = await fetch("/api/shifts?current=1");
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "فشل جلب الوردية");
+      return data.shift as { id: string; status: string } | null;
+    },
+    enabled: !!user,
+  });
+
+  const shiftOpen = activeShift?.status === "OPEN";
+  const blockCheckout = requireShift && !shiftOpen;
 
   // Derive totals from items so the cart re-renders on every change
   const cartTotal = items.reduce((sum, i) => sum + i.unitPrice * i.quantity, 0);
@@ -155,6 +171,10 @@ export default function POSPage() {
 
   const completeSale = async () => {
     if (items.length === 0 || checkingOut) return;
+    if (blockCheckout) {
+      setCheckoutMsg("يجب فتح وردية قبل إتمام البيع");
+      return;
+    }
     setCheckingOut(true);
     setCheckoutMsg(null);
 
@@ -228,6 +248,7 @@ export default function POSPage() {
         void queryClient.invalidateQueries({ queryKey: ["pos-products"] });
         void queryClient.invalidateQueries({ queryKey: ["analytics"] });
         void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+        void queryClient.invalidateQueries({ queryKey: ["current-shift"] });
       }
     } catch (err) {
       console.error("[POS] checkout error:", err);
@@ -279,6 +300,13 @@ export default function POSPage() {
         </Badge>
       }
     >
+      <div className="mb-4 no-print">
+        <PosShiftPanel
+          cashierName={user?.name || "كاشير"}
+          requireShift={requireShift}
+        />
+      </div>
+
       <div className="grid gap-4 lg:grid-cols-5 lg:gap-6 no-print">
         <div className="order-2 space-y-4 lg:order-1 lg:col-span-3">
           <div className="relative">
@@ -520,6 +548,7 @@ export default function POSPage() {
                   disabled={
                     items.length === 0 ||
                     checkingOut ||
+                    blockCheckout ||
                     (paymentMethod === "BANK_APP" &&
                       (!bankAppName.trim() || !transactionRef.trim()))
                   }
