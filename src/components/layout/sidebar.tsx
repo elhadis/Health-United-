@@ -32,7 +32,7 @@ const navItems: {
     href: "/",
     label: "لوحة التحكم",
     icon: LayoutDashboard,
-    roles: ["ADMINISTRATOR", "ADMIN", "USER"],
+    roles: ["ADMINISTRATOR"],
   },
   {
     href: "/pos",

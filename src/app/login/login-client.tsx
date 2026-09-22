@@ -40,7 +40,15 @@ export default function LoginClient() {
         warehouseId: data.user.warehouseId ?? undefined,
       });
       const next = searchParams.get("next");
-      router.replace(next || data.redirectTo || "/");
+      const fallback = data.redirectTo || "/";
+      const dest =
+        next && next !== "/" && next !== "/dashboard" ? next : fallback;
+      // Prefer server role home when next targets the dashboard
+      if (next === "/" || next === "/dashboard") {
+        router.replace(data.redirectTo || fallback);
+      } else {
+        router.replace(dest);
+      }
       router.refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : "فشل تسجيل الدخول");

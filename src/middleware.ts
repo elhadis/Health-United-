@@ -63,8 +63,7 @@ export async function middleware(request: NextRequest) {
     if (pathname.startsWith("/api/")) {
       return NextResponse.json({ error: "ليس لديك صلاحية" }, { status: 403 });
     }
-    const dest = role === "USER" ? "/pos" : roleHome(role);
-    return NextResponse.redirect(new URL(dest, request.url));
+    return NextResponse.redirect(new URL(roleHome(role), request.url));
   }
 
   const response = NextResponse.next();

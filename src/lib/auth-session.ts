@@ -101,6 +101,11 @@ export function roleHome(role: Role): string {
 export function canAccessPath(role: Role, pathname: string): boolean {
   if (pathname.startsWith("/login")) return true;
 
+  // Dashboard is Super Admin only
+  if (pathname === "/" || pathname.startsWith("/dashboard")) {
+    return role === "ADMINISTRATOR";
+  }
+
   if (pathname.startsWith("/reports") || pathname.startsWith("/api/analytics")) {
     return role === "ADMINISTRATOR";
   }
