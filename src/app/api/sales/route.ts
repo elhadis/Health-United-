@@ -154,31 +154,71 @@ export async function POST(request: Request) {
           if (batchId) {
             const batch = await tx.stockBatch.findUnique({
               where: { id: batchId },
-              select: { id: true, quantity: true },
+              select: { id: true, quantity: true, pharmacyId: true },
             });
             if (!batch || batch.quantity < quantity) {
               batchId = null;
             }
           }
 
-          // FIFO fallback across pharmacy then any in-stock batches
+          // Prefer this pharmacy's stock; FEFO across batches when needed
           if (!batchId) {
-            const batch =
-              (await tx.stockBatch.findFirst({
-                where: {
-                  productId: product.id,
-                  quantity: { gte: quantity },
-                  pharmacyId: { not: null },
-                },
-                orderBy: { expiryDate: "asc" },
-              })) ||
-              (await tx.stockBatch.findFirst({
-                where: {
-                  productId: product.id,
-                  quantity: { gte: quantity },
-                },
-                orderBy: { expiryDate: "asc" },
-              }));
+            const pharmacyBatches = await tx.stockBatch.findMany({
+              where: {
+                productId: product.id,
+                quantity: { gt: 0 },
+                pharmacyId,
+              },
+              orderBy: { expiryDate: "asc" },
+            });
+            const pharmacyAvailable = pharmacyBatches.reduce(
+              (s, b) => s + b.quantity,
+              0
+            );
+
+            if (pharmacyAvailable >= quantity) {
+              let remaining = quantity;
+              let primaryBatchId: string | null = null;
+              for (const batch of pharmacyBatches) {
+                if (remaining <= 0) break;
+                const take = Math.min(batch.quantity, remaining);
+                await tx.stockBatch.update({
+                  where: { id: batch.id },
+                  data: { quantity: { decrement: take } },
+                });
+                if (!primaryBatchId) primaryBatchId = batch.id;
+                remaining -= take;
+              }
+              batchId = primaryBatchId;
+
+              const unitType = VALID_UNITS.includes(item.unitType)
+                ? (item.unitType as UnitType)
+                : product.unitType;
+              const unitPrice = Number(item.unitPrice);
+              const costPrice = Number(item.costPrice ?? product.costPrice);
+
+              normalizedItems.push({
+                productId: product.id,
+                productName: item.productName || product.name,
+                batchId,
+                quantity,
+                unitType,
+                unitPrice,
+                costPrice,
+                lineTotal: unitPrice * quantity,
+                lineProfit: (unitPrice - costPrice) * quantity,
+              });
+              continue;
+            }
+
+            // Fallback: any in-stock batch (legacy / warehouse spillover)
+            const batch = await tx.stockBatch.findFirst({
+              where: {
+                productId: product.id,
+                quantity: { gte: quantity },
+              },
+              orderBy: { expiryDate: "asc" },
+            });
             batchId = batch?.id ?? null;
           }
 

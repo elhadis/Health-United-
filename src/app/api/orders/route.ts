@@ -213,7 +213,7 @@ function rankWarehouseBatch(
   return 4;
 }
 
-/** FEFO deduct from warehouse batches; optionally credit pharmacy stock. */
+/** FEFO deduct from warehouse batches only (pharmacy credit happens on CONFIRMED). */
 async function deductWarehouseStockForOrder(
   tx: Prisma.TransactionClient,
   order: {
@@ -264,7 +264,6 @@ async function deductWarehouseStockForOrder(
       orderBy: { expiryDate: "asc" },
     });
 
-    // Prefer exact warehouse match, then warehouse-tagged, then unassigned central stock
     batches.sort((a, b) => {
       const rank =
         rankWarehouseBatch(a, order.warehouseId) -
@@ -291,24 +290,94 @@ async function deductWarehouseStockForOrder(
         data: { quantity: { decrement: take } },
       });
 
-      // Move deducted quantity into pharmacy stock when destination is known
-      if (order.pharmacyId) {
-        await tx.stockBatch.create({
-          data: {
-            productId: item.productId,
-            batchNumber: batch.batchNumber,
-            quantity: take,
-            costPrice: batch.costPrice,
-            expiryDate: batch.expiryDate,
-            pharmacyId: order.pharmacyId,
-            warehouseId: null,
-            manufacturer: batch.manufacturer,
-            country: batch.country,
-          },
-        });
-      }
-
       remaining -= take;
+    }
+  }
+}
+
+/** Credit pharmacy stock when cashier confirms receipt (مؤكد من الصيدلية). */
+async function creditPharmacyStockForOrder(
+  tx: Prisma.TransactionClient,
+  order: {
+    pharmacyId: string | null;
+    warehouseId: string | null;
+    items: Array<{
+      productId: string;
+      quantity: number;
+      unitType: UnitType | string;
+      product: {
+        name: string;
+        unitType?: UnitType | string;
+        unitsPerBox?: number;
+        costPrice?: unknown;
+        manufacturer?: string | null;
+        country?: string | null;
+      } | null;
+    }>;
+  }
+) {
+  if (!order.pharmacyId) {
+    throw new Error("تعذر تأكيد الاستلام — الصيدلية غير محددة لهذا الطلب");
+  }
+
+  for (const item of order.items) {
+    const product = await tx.product.findUnique({
+      where: { id: item.productId },
+      select: {
+        id: true,
+        name: true,
+        unitType: true,
+        unitsPerBox: true,
+        costPrice: true,
+        manufacturer: true,
+        country: true,
+      },
+    });
+
+    const productName = product?.name ?? item.product?.name ?? "منتج";
+    const productUnit = product?.unitType ?? item.product?.unitType ?? item.unitType;
+    const unitsPerBox =
+      product?.unitsPerBox ?? item.product?.unitsPerBox ?? 1;
+    const qty = toWarehouseStockQuantity(
+      item.quantity,
+      item.unitType,
+      productUnit,
+      unitsPerBox
+    );
+
+    if (qty <= 0) {
+      throw new Error(`كمية غير صالحة للمنتج «${productName}»`);
+    }
+
+    // Prefer merging into an existing pharmacy batch for the same product
+    const existingBatch = await tx.stockBatch.findFirst({
+      where: {
+        productId: item.productId,
+        pharmacyId: order.pharmacyId,
+      },
+      orderBy: { expiryDate: "desc" },
+    });
+
+    if (existingBatch) {
+      await tx.stockBatch.update({
+        where: { id: existingBatch.id },
+        data: { quantity: { increment: qty } },
+      });
+    } else {
+      await tx.stockBatch.create({
+        data: {
+          productId: item.productId,
+          batchNumber: `RCV-${Date.now().toString(36).toUpperCase()}`,
+          quantity: qty,
+          costPrice: product?.costPrice ?? item.product?.costPrice ?? 0,
+          expiryDate: new Date(Date.now() + 365 * 86400000),
+          pharmacyId: order.pharmacyId,
+          warehouseId: null,
+          manufacturer:
+            product?.manufacturer ?? item.product?.manufacturer ?? null,
+          country: product?.country ?? item.product?.country ?? null,
+        },
+      });
     }
   }
 }
@@ -547,6 +616,10 @@ export async function PATCH(request: Request) {
       const shouldDeduct =
         status === "APPROVED" && existing.status === "PENDING";
 
+      // Pharmacy stock increases when cashier confirms receipt
+      const shouldCreditPharmacy =
+        status === "CONFIRMED" && existing.status === "DISPATCHED";
+
       if (shouldDeduct) {
         try {
           const order = await prisma.$transaction(async (tx) => {
@@ -592,6 +665,49 @@ export async function PATCH(request: Request) {
             return NextResponse.json({ error: message }, { status: 400 });
           }
           throw stockError;
+        }
+      }
+
+      if (shouldCreditPharmacy) {
+        try {
+          const order = await prisma.$transaction(async (tx) => {
+            await creditPharmacyStockForOrder(tx, {
+              pharmacyId: existing.pharmacyId,
+              warehouseId: existing.warehouseId,
+              items: existing.items.map((item) => ({
+                productId: item.productId,
+                quantity: item.quantity,
+                unitType: item.unitType,
+                product: item.product,
+              })),
+            });
+
+            return tx.order.update({
+              where: { id },
+              data: {
+                status: "CONFIRMED",
+                ...statusTimestamps,
+              },
+              include: {
+                items: { include: { product: true } },
+                pharmacy: true,
+                warehouse: true,
+                requester: true,
+              },
+            });
+          });
+
+          return NextResponse.json({
+            mode: "database",
+            order: mapOrderForClient(order),
+            pharmacyStockCredited: true,
+          });
+        } catch (creditError) {
+          const message =
+            creditError instanceof Error
+              ? creditError.message
+              : "فشل إضافة المخزون للصيدلية";
+          return NextResponse.json({ error: message }, { status: 400 });
         }
       }
 

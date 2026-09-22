@@ -56,18 +56,35 @@ type LastReceipt = {
   createdAt: string;
 };
 
-async function fetchProducts(q: string): Promise<ProductRow[]> {
+async function fetchProducts(
+  q: string,
+  preferPharmacy?: boolean
+): Promise<ProductRow[]> {
   if (typeof navigator !== "undefined" && !navigator.onLine) {
     return searchCachedProducts(q);
   }
   try {
-    // Use all in-stock batches so POS can sell pharmacy + available warehouse stock
-    const res = await fetch(`/api/products?q=${encodeURIComponent(q)}`);
+    const location = preferPharmacy ? "pharmacy" : "all";
+    const res = await fetch(
+      `/api/products?q=${encodeURIComponent(q)}&location=${location}`
+    );
     if (!res.ok) throw new Error("fetch failed");
     const data = await res.json();
-    const products = ((data.products ?? []) as ProductRow[]).filter(
+    let products = ((data.products ?? []) as ProductRow[]).filter(
       (p) => (p.availableQty ?? 0) > 0 || !!p.batchId
     );
+    // If pharmacy filter returned nothing, fall back to all in-stock products
+    if (preferPharmacy && products.length === 0) {
+      const fallback = await fetch(
+        `/api/products?q=${encodeURIComponent(q)}`
+      );
+      if (fallback.ok) {
+        const fb = await fallback.json();
+        products = ((fb.products ?? []) as ProductRow[]).filter(
+          (p) => (p.availableQty ?? 0) > 0 || !!p.batchId
+        );
+      }
+    }
     await cacheProducts(
       products.map((p) => ({
         id: p.id,
@@ -121,8 +138,9 @@ export default function POSPage() {
   const requireShift = user?.role === "USER";
 
   const { data: products = [], isFetching } = useQuery({
-    queryKey: ["pos-products", deferredQuery],
-    queryFn: () => fetchProducts(deferredQuery),
+    queryKey: ["pos-products", deferredQuery, user?.pharmacyId ?? ""],
+    queryFn: () =>
+      fetchProducts(deferredQuery, user?.role === "USER" && !!user?.pharmacyId),
   });
 
   const { data: activeShift } = useQuery({
@@ -246,6 +264,7 @@ export default function POSPage() {
         clearCart();
         setCheckoutMsg(`تم إتمام البيع — ${data.sale?.receiptNumber ?? "إيصال جديد"}`);
         void queryClient.invalidateQueries({ queryKey: ["pos-products"] });
+        void queryClient.invalidateQueries({ queryKey: ["reception-report"] });
         void queryClient.invalidateQueries({ queryKey: ["analytics"] });
         void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
         void queryClient.invalidateQueries({ queryKey: ["current-shift"] });

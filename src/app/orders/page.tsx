@@ -15,6 +15,7 @@ import {
   Printer,
   Trash2,
   BarChart3,
+  PackageCheck,
 } from "lucide-react";
 import { AppShell } from "@/components/layout/app-shell";
 import { Button } from "@/components/ui/button";
@@ -34,6 +35,7 @@ import {
   TransferAnalyticsTab,
   type TransferOrderRow,
 } from "@/components/orders/transfer-analytics-tab";
+import { ReceptionReportsTab } from "@/components/orders/reception-reports-tab";
 import { cn, formatDate, isNearExpiry } from "@/lib/utils";
 import { useAuthStore, canDeleteRecords } from "@/lib/stores/auth-store";
 
@@ -84,7 +86,11 @@ export default function OrdersPage() {
   const allowDelete = canDeleteRecords(user?.role);
   const canViewTransferReports =
     user?.role === "ADMIN" || user?.role === "ADMINISTRATOR";
-  const [pageTab, setPageTab] = useState<"orders" | "transfers">("orders");
+  const canViewReceptionReports =
+    user?.role === "USER" || user?.role === "ADMINISTRATOR";
+  const [pageTab, setPageTab] = useState<"orders" | "transfers" | "reception">(
+    "orders"
+  );
   const [open, setOpen] = useState(false);
   const [notes, setNotes] = useState("");
   const [qty, setQty] = useState("20");
@@ -204,6 +210,18 @@ export default function OrdersPage() {
         void queryClient.invalidateQueries({ queryKey: ["order-products"] });
         void queryClient.invalidateQueries({ queryKey: ["products"] });
         void queryClient.invalidateQueries({ queryKey: ["warehouse"] });
+      }
+      if (next === "CONFIRMED") {
+        setSubmitMsg({
+          type: "success",
+          text: data.pharmacyStockCredited
+            ? "تم تأكيد الاستلام وإضافة الكمية لمخزون الصيدلية"
+            : "تم تأكيد الاستلام من الصيدلية",
+        });
+        void queryClient.invalidateQueries({ queryKey: ["pos-products"] });
+        void queryClient.invalidateQueries({ queryKey: ["reception-report"] });
+        void queryClient.invalidateQueries({ queryKey: ["order-products"] });
+        void queryClient.invalidateQueries({ queryKey: ["products"] });
       }
       void queryClient.invalidateQueries({ queryKey: ["orders"] });
     } catch (err) {
@@ -453,7 +471,7 @@ export default function OrdersPage() {
         ) : undefined
       }
     >
-      {canViewTransferReports && (
+      {(canViewTransferReports || canViewReceptionReports) && (
         <div className="mb-4 flex flex-wrap gap-2 no-print">
           <Button
             type="button"
@@ -464,15 +482,28 @@ export default function OrdersPage() {
             <ClipboardList className="h-4 w-4" />
             الطلبات
           </Button>
-          <Button
-            type="button"
-            size="sm"
-            variant={pageTab === "transfers" ? "default" : "outline"}
-            onClick={() => setPageTab("transfers")}
-          >
-            <BarChart3 className="h-4 w-4" />
-            تقارير التحويلات
-          </Button>
+          {canViewTransferReports && (
+            <Button
+              type="button"
+              size="sm"
+              variant={pageTab === "transfers" ? "default" : "outline"}
+              onClick={() => setPageTab("transfers")}
+            >
+              <BarChart3 className="h-4 w-4" />
+              تقارير التحويلات
+            </Button>
+          )}
+          {canViewReceptionReports && (
+            <Button
+              type="button"
+              size="sm"
+              variant={pageTab === "reception" ? "default" : "outline"}
+              onClick={() => setPageTab("reception")}
+            >
+              <PackageCheck className="h-4 w-4" />
+              تقارير الاستلام
+            </Button>
+          )}
         </div>
       )}
 
@@ -490,6 +521,8 @@ export default function OrdersPage() {
 
       {pageTab === "transfers" && canViewTransferReports ? (
         <TransferAnalyticsTab orders={orders} />
+      ) : pageTab === "reception" && canViewReceptionReports ? (
+        <ReceptionReportsTab pharmacyId={user?.pharmacyId} />
       ) : (
         <>
           <div className="mb-6 grid gap-3 sm:grid-cols-2 md:grid-cols-4 no-print">
