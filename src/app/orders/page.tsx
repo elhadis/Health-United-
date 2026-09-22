@@ -14,6 +14,7 @@ import {
   Search,
   Printer,
   Trash2,
+  BarChart3,
 } from "lucide-react";
 import { AppShell } from "@/components/layout/app-shell";
 import { Button } from "@/components/ui/button";
@@ -29,18 +30,14 @@ import {
 import { Input } from "@/components/ui/input";
 import { ConfirmDeleteDialog } from "@/components/ui/confirm-delete-dialog";
 import { PrintBrandHeader } from "@/components/branding/print-brand-header";
+import {
+  TransferAnalyticsTab,
+  type TransferOrderRow,
+} from "@/components/orders/transfer-analytics-tab";
 import { cn, formatDate, isNearExpiry } from "@/lib/utils";
 import { useAuthStore, canDeleteRecords } from "@/lib/stores/auth-store";
 
-type OrderRow = {
-  id: string;
-  orderNumber: string;
-  type: string;
-  status: "PENDING" | "APPROVED" | "DISPATCHED" | "CONFIRMED" | "REJECTED";
-  notes?: string;
-  createdAt: string;
-  items: { productName: string; quantity: number; unitType: string }[];
-};
+type OrderRow = TransferOrderRow;
 
 type ProductOption = {
   id: string;
@@ -85,6 +82,9 @@ export default function OrdersPage() {
   const queryClient = useQueryClient();
   const user = useAuthStore((s) => s.user);
   const allowDelete = canDeleteRecords(user?.role);
+  const canViewTransferReports =
+    user?.role === "ADMIN" || user?.role === "ADMINISTRATOR";
+  const [pageTab, setPageTab] = useState<"orders" | "transfers">("orders");
   const [open, setOpen] = useState(false);
   const [notes, setNotes] = useState("");
   const [qty, setQty] = useState("20");
@@ -96,6 +96,7 @@ export default function OrdersPage() {
   const [printOrderId, setPrintOrderId] = useState<string | null>(null);
   const [deleteOrderId, setDeleteOrderId] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [advancingId, setAdvancingId] = useState<string | null>(null);
   const [submitMsg, setSubmitMsg] = useState<{
     type: "success" | "error";
     text: string;
@@ -155,7 +156,6 @@ export default function OrdersPage() {
 
   const handleDialogChange = (next: boolean) => {
     setOpen(next);
-    // Always clear prior selection so the next order starts empty
     resetForm();
   };
 
@@ -163,7 +163,6 @@ export default function OrdersPage() {
 
   const handlePrintOrder = (id: string) => {
     setPrintOrderId(id);
-    // Allow React to render the print document before opening the dialog
     requestAnimationFrame(() => {
       setTimeout(() => window.print(), 50);
     });
@@ -171,21 +170,49 @@ export default function OrdersPage() {
 
   const advance = async (id: string, status: OrderRow["status"]) => {
     const next = nextStatus[status];
-    if (!next) return;
+    if (!next || advancingId) return;
+    setAdvancingId(id);
+    setSubmitMsg(null);
     try {
       const res = await fetch("/api/orders", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id, status: next }),
+        body: JSON.stringify({
+          id,
+          status: next,
+          approverId: user?.id,
+        }),
       });
+      const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        console.error("[orders] advance failed:", res.status, data);
+        const errorText =
+          data.error ||
+          (next === "APPROVED"
+            ? "تعذر الاعتماد — تحقق من توفر المخزون"
+            : "فشل تحديث حالة الطلب");
+        setSubmitMsg({ type: "error", text: errorText });
+        window.alert(errorText);
         return;
+      }
+      if (next === "APPROVED") {
+        setSubmitMsg({
+          type: "success",
+          text: data.stockDeducted
+            ? "تم اعتماد التحويل وخصم الكمية من مخزون المستودع"
+            : "تم اعتماد التحويل",
+        });
+        void queryClient.invalidateQueries({ queryKey: ["order-products"] });
+        void queryClient.invalidateQueries({ queryKey: ["products"] });
+        void queryClient.invalidateQueries({ queryKey: ["warehouse"] });
       }
       void queryClient.invalidateQueries({ queryKey: ["orders"] });
     } catch (err) {
       console.error("[orders] advance error:", err);
+      const errorText = "تعذر الاتصال بالخادم أثناء تحديث الطلب";
+      setSubmitMsg({ type: "error", text: errorText });
+      window.alert(errorText);
+    } finally {
+      setAdvancingId(null);
     }
   };
 
@@ -199,6 +226,10 @@ export default function OrdersPage() {
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
         console.error("[orders] reject failed:", res.status, data);
+        setSubmitMsg({
+          type: "error",
+          text: data.error || "فشل رفض الطلب",
+        });
         return;
       }
       void queryClient.invalidateQueries({ queryKey: ["orders"] });
@@ -278,7 +309,6 @@ export default function OrdersPage() {
         return;
       }
 
-      // Optimistic list refresh
       void queryClient.invalidateQueries({ queryKey: ["orders"] });
       setOpen(false);
       resetForm();
@@ -302,13 +332,14 @@ export default function OrdersPage() {
       title="الطلبات والتحويلات"
       subtitle="مسار: قيد الانتظار → معتمد → مُرسل → مؤكد من الصيدلية"
       actions={
-        <Dialog open={open} onOpenChange={handleDialogChange}>
-          <DialogTrigger asChild>
-            <Button>
-              <Send className="h-4 w-4" />
-              طلب تحويل جديد
-            </Button>
-          </DialogTrigger>
+        pageTab === "orders" ? (
+          <Dialog open={open} onOpenChange={handleDialogChange}>
+            <DialogTrigger asChild>
+              <Button>
+                <Send className="h-4 w-4" />
+                طلب تحويل جديد
+              </Button>
+            </DialogTrigger>
             <DialogContent className="overflow-visible">
               <DialogHeader>
                 <DialogTitle>طلب من الصيدلية إلى المستودع</DialogTitle>
@@ -419,8 +450,32 @@ export default function OrdersPage() {
               </div>
             </DialogContent>
           </Dialog>
+        ) : undefined
       }
     >
+      {canViewTransferReports && (
+        <div className="mb-4 flex flex-wrap gap-2 no-print">
+          <Button
+            type="button"
+            size="sm"
+            variant={pageTab === "orders" ? "default" : "outline"}
+            onClick={() => setPageTab("orders")}
+          >
+            <ClipboardList className="h-4 w-4" />
+            الطلبات
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            variant={pageTab === "transfers" ? "default" : "outline"}
+            onClick={() => setPageTab("transfers")}
+          >
+            <BarChart3 className="h-4 w-4" />
+            تقارير التحويلات
+          </Button>
+        </div>
+      )}
+
       {submitMsg && (
         <p
           className={`mb-4 rounded-lg px-3 py-2 text-sm no-print ${
@@ -433,108 +488,119 @@ export default function OrdersPage() {
         </p>
       )}
 
-      <div className="mb-6 grid gap-3 sm:grid-cols-2 md:grid-cols-4 no-print">
-        {(["PENDING", "APPROVED", "DISPATCHED", "CONFIRMED"] as const).map((s) => {
-          const meta = statusMeta[s];
-          const Icon = meta.icon;
-          const count = orders.filter((o) => o.status === s).length;
-          return (
-            <Card key={s}>
-              <CardContent className="flex items-center gap-3 p-4">
-                <div className="rounded-lg bg-slate-100 p-2">
-                  <Icon className="h-4 w-4 text-secondary" />
-                </div>
-                <div>
-                  <p className="text-xs text-slate-500">{meta.label}</p>
-                  <p className="text-xl font-bold">{count}</p>
-                </div>
-              </CardContent>
-            </Card>
-          );
-        })}
-      </div>
+      {pageTab === "transfers" && canViewTransferReports ? (
+        <TransferAnalyticsTab orders={orders} />
+      ) : (
+        <>
+          <div className="mb-6 grid gap-3 sm:grid-cols-2 md:grid-cols-4 no-print">
+            {(["PENDING", "APPROVED", "DISPATCHED", "CONFIRMED"] as const).map((s) => {
+              const meta = statusMeta[s];
+              const Icon = meta.icon;
+              const count = orders.filter((o) => o.status === s).length;
+              return (
+                <Card key={s}>
+                  <CardContent className="flex items-center gap-3 p-4">
+                    <div className="rounded-lg bg-slate-100 p-2">
+                      <Icon className="h-4 w-4 text-secondary" />
+                    </div>
+                    <div>
+                      <p className="text-xs text-slate-500">{meta.label}</p>
+                      <p className="text-xl font-bold">{count}</p>
+                    </div>
+                  </CardContent>
+                </Card>
+              );
+            })}
+          </div>
 
-      <div className="space-y-4 no-print">
-        {isLoading && <p className="text-sm text-slate-500">جاري التحميل...</p>}
-        {orders.map((order, idx) => {
-          const meta = statusMeta[order.status];
-          const Icon = meta.icon;
-          return (
-            <motion.div
-              key={order.id}
-              initial={{ opacity: 0, y: 10 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: idx * 0.04 }}
-            >
-              <Card>
-                <CardHeader className="flex-row items-start justify-between gap-4 space-y-0">
-                  <div>
-                    <CardTitle className="flex items-center gap-2 text-base">
-                      <ClipboardList className="h-4 w-4 text-primary" />
-                      {order.orderNumber}
-                    </CardTitle>
-                    <p className="mt-1 text-sm text-slate-500">
-                      {formatDate(order.createdAt)}
-                      {order.notes ? ` · ${order.notes}` : ""}
-                    </p>
-                  </div>
-                  <Badge variant={meta.variant}>
-                    <Icon className="h-3.5 w-3.5" />
-                    {meta.label}
-                  </Badge>
-                </CardHeader>
-                <CardContent className="space-y-4">
-                  <div className="flex flex-wrap gap-2">
-                    {order.items.map((item, i) => (
-                      <Badge key={i} variant="outline">
-                        {item.productName} × {item.quantity} ({item.unitType})
+          <div className="space-y-4 no-print">
+            {isLoading && <p className="text-sm text-slate-500">جاري التحميل...</p>}
+            {orders.map((order, idx) => {
+              const meta = statusMeta[order.status];
+              const Icon = meta.icon;
+              return (
+                <motion.div
+                  key={order.id}
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: idx * 0.04 }}
+                >
+                  <Card>
+                    <CardHeader className="flex-row items-start justify-between gap-4 space-y-0">
+                      <div>
+                        <CardTitle className="flex items-center gap-2 text-base">
+                          <ClipboardList className="h-4 w-4 text-primary" />
+                          {order.orderNumber}
+                        </CardTitle>
+                        <p className="mt-1 text-sm text-slate-500">
+                          {formatDate(order.createdAt)}
+                          {order.notes ? ` · ${order.notes}` : ""}
+                        </p>
+                      </div>
+                      <Badge variant={meta.variant}>
+                        <Icon className="h-3.5 w-3.5" />
+                        {meta.label}
                       </Badge>
-                    ))}
-                  </div>
+                    </CardHeader>
+                    <CardContent className="space-y-4">
+                      <div className="flex flex-wrap gap-2">
+                        {order.items.map((item, i) => (
+                          <Badge key={i} variant="outline">
+                            {item.productName} × {item.quantity} ({item.unitType})
+                          </Badge>
+                        ))}
+                      </div>
 
-                  <div className="flex flex-wrap gap-2">
-                    {nextStatus[order.status] && (
-                      <Button onClick={() => advance(order.id, order.status)}>
-                        <Send className="h-4 w-4" />
-                        ترحيل إلى: {statusMeta[nextStatus[order.status]!].label}
-                      </Button>
-                    )}
-                    {order.status === "PENDING" && (
-                      <Button variant="danger" onClick={() => reject(order.id)}>
-                        <XCircle className="h-4 w-4" />
-                        رفض
-                      </Button>
-                    )}
-                    <Button variant="outline" onClick={() => handlePrintOrder(order.id)}>
-                      <Printer className="h-4 w-4" />
-                      طباعة التحويل
-                    </Button>
-                    {allowDelete && (
-                      <Button
-                        variant="danger"
-                        onClick={() => setDeleteOrderId(order.id)}
-                      >
-                        <Trash2 className="h-4 w-4" />
-                        حذف
-                      </Button>
-                    )}
-                  </div>
+                      <div className="flex flex-wrap gap-2">
+                        {nextStatus[order.status] && (
+                          <Button
+                            disabled={advancingId === order.id}
+                            onClick={() => advance(order.id, order.status)}
+                          >
+                            <Send className="h-4 w-4" />
+                            {advancingId === order.id
+                              ? "جاري الترحيل..."
+                              : `ترحيل إلى: ${statusMeta[nextStatus[order.status]!].label}`}
+                          </Button>
+                        )}
+                        {order.status === "PENDING" && (
+                          <Button variant="danger" onClick={() => reject(order.id)}>
+                            <XCircle className="h-4 w-4" />
+                            رفض
+                          </Button>
+                        )}
+                        <Button variant="outline" onClick={() => handlePrintOrder(order.id)}>
+                          <Printer className="h-4 w-4" />
+                          طباعة التحويل
+                        </Button>
+                        {allowDelete && (
+                          <Button
+                            variant="danger"
+                            onClick={() => setDeleteOrderId(order.id)}
+                          >
+                            <Trash2 className="h-4 w-4" />
+                            حذف
+                          </Button>
+                        )}
+                      </div>
 
-                  <div className="flex items-center gap-2 text-xs text-slate-400">
-                    <Clock className="h-3.5 w-3.5" />
-                    النوع:{" "}
-                    {order.type === "PHARMACY_TO_WAREHOUSE"
-                      ? "صيدلية ← مستودع"
-                      : order.type === "WAREHOUSE_TO_ADMIN"
-                        ? "مستودع ← إدارة"
-                        : "طلب شراء"}
-                  </div>
-                </CardContent>
-              </Card>
-            </motion.div>
-          );
-        })}
-      </div>
+                      <div className="flex items-center gap-2 text-xs text-slate-400">
+                        <Clock className="h-3.5 w-3.5" />
+                        النوع:{" "}
+                        {order.type === "PHARMACY_TO_WAREHOUSE"
+                          ? "صيدلية ← مستودع"
+                          : order.type === "WAREHOUSE_TO_ADMIN"
+                            ? "مستودع ← إدارة"
+                            : "طلب شراء"}
+                      </div>
+                    </CardContent>
+                  </Card>
+                </motion.div>
+              );
+            })}
+          </div>
+        </>
+      )}
 
       {printOrder && (
         <div className="print-only print-document rounded-xl border border-slate-200 bg-white p-6">

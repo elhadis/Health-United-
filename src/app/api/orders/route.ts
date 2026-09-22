@@ -1,9 +1,11 @@
 import { NextResponse } from "next/server";
-import type { UnitType } from "@prisma/client";
+import type { UnitType, Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import {
   addDemoOrder,
+  decrementDemoStock,
   demoOrders,
+  demoProducts,
   updateDemoOrderStatus,
 } from "@/lib/demo-data";
 import { getSessionUser, requireAdministratorForDelete } from "@/lib/auth";
@@ -109,10 +111,17 @@ function mapOrderForClient(order: {
   status: string;
   notes: string | null;
   createdAt: Date;
+  approvedAt?: Date | null;
+  dispatchedAt?: Date | null;
+  confirmedAt?: Date | null;
+  pharmacy?: { id: string; name: string } | null;
+  warehouse?: { id: string; name: string } | null;
+  requester?: { id: string; name: string; username?: string } | null;
   items: Array<{
     quantity: number;
     unitType: string;
-    product?: { name: string } | null;
+    productId?: string;
+    product?: { id?: string; name: string } | null;
     productName?: string;
   }>;
 }) {
@@ -123,12 +132,98 @@ function mapOrderForClient(order: {
     status: order.status,
     notes: order.notes ?? undefined,
     createdAt: order.createdAt.toISOString?.() ?? order.createdAt,
+    approvedAt: order.approvedAt
+      ? order.approvedAt.toISOString?.() ?? order.approvedAt
+      : null,
+    dispatchedAt: order.dispatchedAt
+      ? order.dispatchedAt.toISOString?.() ?? order.dispatchedAt
+      : null,
+    confirmedAt: order.confirmedAt
+      ? order.confirmedAt.toISOString?.() ?? order.confirmedAt
+      : null,
+    pharmacyId: order.pharmacy?.id ?? null,
+    pharmacyName: order.pharmacy?.name ?? null,
+    warehouseId: order.warehouse?.id ?? null,
+    warehouseName: order.warehouse?.name ?? null,
+    requesterId: order.requester?.id ?? null,
+    requesterName: order.requester?.name ?? null,
     items: order.items.map((item) => ({
+      productId: item.productId ?? item.product?.id ?? null,
       productName: item.product?.name ?? item.productName ?? "منتج",
       quantity: item.quantity,
       unitType: item.unitType,
     })),
   };
+}
+
+/** FEFO deduct from warehouse batches; optionally credit pharmacy stock. */
+async function deductWarehouseStockForOrder(
+  tx: Prisma.TransactionClient,
+  order: {
+    warehouseId: string | null;
+    pharmacyId: string | null;
+    items: Array<{
+      productId: string;
+      quantity: number;
+      product: { name: string } | null;
+    }>;
+  }
+) {
+  for (const item of order.items) {
+    const productName = item.product?.name ?? "منتج";
+    const need = item.quantity;
+
+    const batchWhere: Prisma.StockBatchWhereInput = {
+      productId: item.productId,
+      quantity: { gt: 0 },
+      ...(order.warehouseId
+        ? { warehouseId: order.warehouseId }
+        : { warehouseId: { not: null }, pharmacyId: null }),
+    };
+
+    const batches = await tx.stockBatch.findMany({
+      where: batchWhere,
+      orderBy: { expiryDate: "asc" },
+    });
+
+    const available = batches.reduce((sum, b) => sum + b.quantity, 0);
+
+    if (available < need) {
+      throw new Error(
+        `المخزون غير كافٍ للمنتج «${productName}». المطلوب: ${need}، المتاح في المستودع: ${available}`
+      );
+    }
+
+    let remaining = need;
+    for (const batch of batches) {
+      if (remaining <= 0) break;
+      const take = Math.min(batch.quantity, remaining);
+
+      await tx.stockBatch.update({
+        where: { id: batch.id },
+        data: { quantity: { decrement: take } },
+      });
+
+      // Move deducted quantity into pharmacy stock when destination is known
+      if (order.pharmacyId) {
+        await tx.stockBatch.create({
+          data: {
+            productId: item.productId,
+            batchNumber: batch.batchNumber,
+            quantity: take,
+            costPrice: batch.costPrice,
+            expiryDate: batch.expiryDate,
+            pharmacyId: order.pharmacyId,
+            warehouseId: null,
+            manufacturer: batch.manufacturer,
+            country: batch.country,
+          },
+        });
+      }
+
+      remaining -= take;
+    }
+  }
 }
 
 export async function GET(request: Request) {
@@ -165,7 +260,7 @@ export async function GET(request: Request) {
         requester: true,
       },
       orderBy: { createdAt: "desc" },
-      take: 100,
+      take: 500,
     });
     return NextResponse.json({
       mode: "database",
@@ -271,7 +366,12 @@ export async function POST(request: Request) {
             })),
           },
         },
-        include: { items: { include: { product: true } } },
+        include: {
+          items: { include: { product: true } },
+          pharmacy: true,
+          warehouse: true,
+          requester: true,
+        },
       });
 
       return NextResponse.json(
@@ -325,7 +425,7 @@ export async function POST(request: Request) {
 export async function PATCH(request: Request) {
   try {
     const body = await request.json();
-    const { id, status, approverId } = body;
+    const { id, status } = body;
     if (!id || !status) {
       return NextResponse.json(
         { error: "معرف الطلب والحالة مطلوبان" },
@@ -333,20 +433,93 @@ export async function PATCH(request: Request) {
       );
     }
 
+    const session = await getSessionUser();
+    const approverId = body.approverId || session?.id || null;
+
     const statusTimestamps: Record<string, Date> = {};
     if (status === "APPROVED") statusTimestamps.approvedAt = new Date();
     if (status === "DISPATCHED") statusTimestamps.dispatchedAt = new Date();
     if (status === "CONFIRMED") statusTimestamps.confirmedAt = new Date();
 
     try {
+      const existing = await prisma.order.findUnique({
+        where: { id },
+        include: {
+          items: { include: { product: true } },
+          pharmacy: true,
+          warehouse: true,
+          requester: true,
+        },
+      });
+
+      if (!existing) {
+        return NextResponse.json({ error: "الطلب غير موجود" }, { status: 404 });
+      }
+
+      // Stock deduction fires only on first transition to APPROVED
+      const shouldDeduct =
+        status === "APPROVED" && existing.status === "PENDING";
+
+      if (shouldDeduct) {
+        try {
+          const order = await prisma.$transaction(async (tx) => {
+            await deductWarehouseStockForOrder(tx, {
+              warehouseId: existing.warehouseId,
+              pharmacyId: existing.pharmacyId,
+              items: existing.items.map((item) => ({
+                productId: item.productId,
+                quantity: item.quantity,
+                product: item.product,
+              })),
+            });
+
+            return tx.order.update({
+              where: { id },
+              data: {
+                status: "APPROVED",
+                approverId,
+                ...statusTimestamps,
+              },
+              include: {
+                items: { include: { product: true } },
+                pharmacy: true,
+                warehouse: true,
+                requester: true,
+              },
+            });
+          });
+
+          return NextResponse.json({
+            mode: "database",
+            order: mapOrderForClient(order),
+            stockDeducted: true,
+          });
+        } catch (stockError) {
+          const message =
+            stockError instanceof Error
+              ? stockError.message
+              : "فشل خصم المخزون";
+          // Insufficient stock / validation — cancel approval
+          if (message.includes("المخزون غير كافٍ")) {
+            return NextResponse.json({ error: message }, { status: 400 });
+          }
+          throw stockError;
+        }
+      }
+
       const order = await prisma.order.update({
         where: { id },
         data: {
           status,
-          approverId,
+          approverId: status === "APPROVED" ? approverId : undefined,
           ...statusTimestamps,
         },
-        include: { items: { include: { product: true } } },
+        include: {
+          items: { include: { product: true } },
+          pharmacy: true,
+          warehouse: true,
+          requester: true,
+        },
       });
       return NextResponse.json({
         mode: "database",
@@ -354,6 +527,39 @@ export async function PATCH(request: Request) {
       });
     } catch (dbError) {
       console.error("[PATCH /api/orders] database error:", dbError);
+      const message =
+        dbError instanceof Error ? dbError.message : "فشل تحديث الطلب";
+      if (message.includes("المخزون غير كافٍ")) {
+        return NextResponse.json({ error: message }, { status: 400 });
+      }
+
+      // Demo fallback: validate + deduct when approving
+      if (status === "APPROVED") {
+        const demoOrder = demoOrders.find((o) => o.id === id);
+        if (demoOrder && demoOrder.status === "PENDING") {
+          for (const item of demoOrder.items) {
+            const product = demoProducts.find(
+              (p) =>
+                p.name === item.productName ||
+                p.name.includes(item.productName) ||
+                item.productName.includes(p.name)
+            );
+            if (!product || product.availableQty < item.quantity) {
+              return NextResponse.json(
+                {
+                  error: `المخزون غير كافٍ للمنتج «${item.productName}». المطلوب: ${item.quantity}، المتاح في المستودع: ${product?.availableQty ?? 0}`,
+                },
+                { status: 400 }
+              );
+            }
+          }
+          for (const item of demoOrder.items) {
+            const product = demoProducts.find((p) => p.name === item.productName);
+            if (product) decrementDemoStock(product.id, item.quantity);
+          }
+        }
+      }
+
       const order = updateDemoOrderStatus(id, status);
       if (!order) {
         return NextResponse.json({ error: "الطلب غير موجود" }, { status: 404 });
