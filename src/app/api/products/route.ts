@@ -1,10 +1,36 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { demoBatches, demoProducts } from "@/lib/demo-data";
-import { requireAdministratorForDelete } from "@/lib/auth";
+import { getSessionUser, requireAdministratorForDelete } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
 
+async function resolveDefaultWarehouseId(
+  requested?: string | null
+): Promise<string | null> {
+  if (requested) {
+    const exists = await prisma.warehouse.findUnique({
+      where: { id: requested },
+      select: { id: true },
+    });
+    if (exists) return exists.id;
+  }
+
+  const session = await getSessionUser();
+  if (session?.warehouseId) {
+    const exists = await prisma.warehouse.findUnique({
+      where: { id: session.warehouseId },
+      select: { id: true },
+    });
+    if (exists) return exists.id;
+  }
+
+  const first = await prisma.warehouse.findFirst({
+    orderBy: { createdAt: "asc" },
+    select: { id: true },
+  });
+  return first?.id ?? null;
+}
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const q = searchParams.get("q")?.trim() ?? "";
@@ -103,6 +129,8 @@ export async function POST(request: Request) {
   try {
     const body = await request.json();
     try {
+      const warehouseId = await resolveDefaultWarehouseId(body.warehouseId);
+
       const product = await prisma.product.create({
         data: {
           name: body.name,
@@ -115,7 +143,7 @@ export async function POST(request: Request) {
           manufacturer: body.manufacturer,
           country: body.country,
           lowStockThreshold: body.lowStockThreshold ?? 10,
-          warehouseId: body.warehouseId,
+          warehouseId,
           batches: body.batch
             ? {
                 create: {
@@ -123,8 +151,8 @@ export async function POST(request: Request) {
                   quantity: body.batch.quantity,
                   costPrice: body.batch.costPrice ?? body.costPrice,
                   expiryDate: new Date(body.batch.expiryDate),
-                  warehouseId: body.warehouseId,
-                  pharmacyId: body.pharmacyId,
+                  warehouseId,
+                  pharmacyId: body.pharmacyId ?? null,
                   manufacturer: body.manufacturer,
                   country: body.country,
                 },

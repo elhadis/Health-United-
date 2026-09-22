@@ -156,6 +156,63 @@ function mapOrderForClient(order: {
   };
 }
 
+/**
+ * Convert ordered quantity into the unit used on warehouse batch rows.
+ * Handles BOX/CARTON vs base-unit mismatches via unitsPerBox.
+ */
+function toWarehouseStockQuantity(
+  orderQty: number,
+  orderUnit: UnitType | string,
+  productUnit: UnitType | string,
+  unitsPerBox: number
+): number {
+  const qty = Math.max(0, Math.floor(Number(orderQty) || 0));
+  const factor = Math.max(1, Math.floor(Number(unitsPerBox) || 1));
+  const orderIsBox = orderUnit === "BOX" || orderUnit === "CARTON";
+  const productIsBox = productUnit === "BOX" || productUnit === "CARTON";
+
+  if (orderIsBox && !productIsBox) {
+    return qty * factor;
+  }
+  if (!orderIsBox && productIsBox && orderUnit !== productUnit) {
+    return Math.ceil(qty / factor);
+  }
+  return qty;
+}
+
+/** Active warehouse batches for a product (aggregated across valid locations). */
+function warehouseBatchWhere(
+  productId: string,
+  warehouseId: string | null
+): Prisma.StockBatchWhereInput {
+  const warehouseClauses: Prisma.StockBatchWhereInput[] = [
+    // Unassigned / central stock (common when products are added without an explicit warehouseId)
+    { pharmacyId: null },
+    // Any batch explicitly tagged to a warehouse
+    { warehouseId: { not: null } },
+  ];
+  if (warehouseId) {
+    warehouseClauses.unshift({ warehouseId });
+  }
+
+  return {
+    productId,
+    quantity: { gt: 0 },
+    OR: warehouseClauses,
+  };
+}
+
+function rankWarehouseBatch(
+  batch: { warehouseId: string | null; pharmacyId: string | null },
+  preferredWarehouseId: string | null
+): number {
+  if (preferredWarehouseId && batch.warehouseId === preferredWarehouseId) return 0;
+  if (batch.warehouseId && !batch.pharmacyId) return 1;
+  if (batch.warehouseId) return 2;
+  if (!batch.pharmacyId) return 3;
+  return 4;
+}
+
 /** FEFO deduct from warehouse batches; optionally credit pharmacy stock. */
 async function deductWarehouseStockForOrder(
   tx: Prisma.TransactionClient,
@@ -165,25 +222,55 @@ async function deductWarehouseStockForOrder(
     items: Array<{
       productId: string;
       quantity: number;
-      product: { name: string } | null;
+      unitType: UnitType | string;
+      product: {
+        name: string;
+        unitType?: UnitType | string;
+        unitsPerBox?: number;
+      } | null;
     }>;
   }
 ) {
   for (const item of order.items) {
-    const productName = item.product?.name ?? "منتج";
-    const need = item.quantity;
+    const product =
+      (await tx.product.findUnique({
+        where: { id: item.productId },
+        select: {
+          id: true,
+          name: true,
+          unitType: true,
+          unitsPerBox: true,
+        },
+      })) ?? null;
 
-    const batchWhere: Prisma.StockBatchWhereInput = {
-      productId: item.productId,
-      quantity: { gt: 0 },
-      ...(order.warehouseId
-        ? { warehouseId: order.warehouseId }
-        : { warehouseId: { not: null }, pharmacyId: null }),
-    };
+    const productName = product?.name ?? item.product?.name ?? "منتج";
+    const productUnit = product?.unitType ?? item.product?.unitType ?? item.unitType;
+    const unitsPerBox =
+      product?.unitsPerBox ?? item.product?.unitsPerBox ?? 1;
+
+    const need = toWarehouseStockQuantity(
+      item.quantity,
+      item.unitType,
+      productUnit,
+      unitsPerBox
+    );
+
+    if (need <= 0) {
+      throw new Error(`كمية غير صالحة للمنتج «${productName}»`);
+    }
 
     const batches = await tx.stockBatch.findMany({
-      where: batchWhere,
+      where: warehouseBatchWhere(item.productId, order.warehouseId),
       orderBy: { expiryDate: "asc" },
+    });
+
+    // Prefer exact warehouse match, then warehouse-tagged, then unassigned central stock
+    batches.sort((a, b) => {
+      const rank =
+        rankWarehouseBatch(a, order.warehouseId) -
+        rankWarehouseBatch(b, order.warehouseId);
+      if (rank !== 0) return rank;
+      return a.expiryDate.getTime() - b.expiryDate.getTime();
     });
 
     const available = batches.reduce((sum, b) => sum + b.quantity, 0);
@@ -469,6 +556,7 @@ export async function PATCH(request: Request) {
               items: existing.items.map((item) => ({
                 productId: item.productId,
                 quantity: item.quantity,
+                unitType: item.unitType,
                 product: item.product,
               })),
             });
