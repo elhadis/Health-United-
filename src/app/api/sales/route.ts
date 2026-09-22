@@ -19,6 +19,8 @@ const VALID_UNITS: UnitType[] = [
   "VIAL",
   "ML",
   "STRIP",
+  "CATHETER",
+  "DRIP",
 ];
 
 async function resolvePharmacyId(requested?: string | null) {

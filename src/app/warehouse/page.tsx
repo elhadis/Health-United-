@@ -217,7 +217,7 @@ export default function WarehousePage() {
                   value={form.unitType}
                   onChange={(e) => setForm({ ...form, unitType: e.target.value })}
                 >
-                  {["BOX", "CARTON", "BOTTLE", "INJECTABLE", "VIAL", "ML", "STRIP"].map(
+                  {["BOX", "CARTON", "BOTTLE", "INJECTABLE", "VIAL", "ML", "STRIP", "CATHETER", "DRIP"].map(
                     (u) => (
                       <option key={u} value={u}>
                         {u}

@@ -67,7 +67,16 @@ async function tryPrismaSync(payload: SyncSalePayload["sale"]) {
             batchId: item.batchId,
             productName: item.productName,
             quantity: item.quantity,
-            unitType: item.unitType as "STRIP" | "BOX" | "BOTTLE" | "VIAL" | "ML" | "INJECTABLE" | "CARTON",
+            unitType: item.unitType as
+              | "STRIP"
+              | "BOX"
+              | "BOTTLE"
+              | "VIAL"
+              | "ML"
+              | "INJECTABLE"
+              | "CARTON"
+              | "CATHETER"
+              | "DRIP",
             unitPrice: item.unitPrice,
             costPrice: item.costPrice,
             lineTotal: item.lineTotal,

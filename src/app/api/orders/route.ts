@@ -19,6 +19,8 @@ const VALID_UNITS: UnitType[] = [
   "VIAL",
   "ML",
   "STRIP",
+  "CATHETER",
+  "DRIP",
 ];
 
 function parseQuantity(value: unknown): number | null {

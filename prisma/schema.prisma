@@ -26,6 +26,8 @@ enum UnitType {
   VIAL
   ML
   STRIP
+  CATHETER
+  DRIP
 }
 
 enum OrderStatus {
