@@ -36,6 +36,7 @@ export async function GET(request: Request) {
   const q = searchParams.get("q")?.trim() ?? "";
   const category = searchParams.get("category");
   const location = searchParams.get("location"); // pharmacy | warehouse | all
+  const pharmacyId = searchParams.get("pharmacyId");
 
   try {
     const products = await prisma.product.findMany({
@@ -55,7 +56,11 @@ export async function GET(request: Request) {
         batches: {
           where: {
             quantity: { gt: 0 },
-            ...(location === "pharmacy" ? { pharmacyId: { not: null } } : {}),
+            ...(location === "pharmacy"
+              ? pharmacyId
+                ? { pharmacyId }
+                : { pharmacyId: { not: null } }
+              : {}),
             ...(location === "warehouse" ? { warehouseId: { not: null } } : {}),
           },
           orderBy: { expiryDate: "asc" },

@@ -663,11 +663,39 @@ export async function PATCH(request: Request) {
 
       if (shouldCreditPharmacy) {
         try {
+          // Resolve destination pharmacy (order → session cashier → first pharmacy)
+          let creditPharmacyId =
+            existing.pharmacyId || session?.pharmacyId || null;
+          if (creditPharmacyId) {
+            const exists = await prisma.pharmacy.findUnique({
+              where: { id: creditPharmacyId },
+              select: { id: true },
+            });
+            if (!exists) creditPharmacyId = null;
+          }
+          if (!creditPharmacyId) {
+            const first = await prisma.pharmacy.findFirst({
+              orderBy: { createdAt: "asc" },
+              select: { id: true },
+            });
+            creditPharmacyId = first?.id ?? null;
+          }
+
+          if (!creditPharmacyId) {
+            return NextResponse.json(
+              {
+                error:
+                  "تعذر تأكيد الاستلام — لا توجد صيدلية مرتبطة لإضافة المخزون",
+              },
+              { status: 400 }
+            );
+          }
+
           const order = await prisma.$transaction(async (tx) => {
             await deductWarehouseStockForOrder(
               tx,
               {
-                pharmacyId: existing.pharmacyId,
+                pharmacyId: creditPharmacyId,
                 warehouseId: existing.warehouseId,
                 items: existing.items.map((item) => ({
                   productId: item.productId,
@@ -683,6 +711,7 @@ export async function PATCH(request: Request) {
               where: { id },
               data: {
                 status: "CONFIRMED",
+                pharmacyId: existing.pharmacyId ?? creditPharmacyId,
                 ...statusTimestamps,
               },
               include: {

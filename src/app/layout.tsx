@@ -1,16 +1,8 @@
 import type { Metadata, Viewport } from "next";
-import { Cairo } from "next/font/google";
 import { Providers } from "@/components/providers/providers";
 import { ServiceWorkerRegister } from "@/components/providers/sw-register";
 import { APP_TAGLINE, APP_TITLE, COMPANY_NAME_AR } from "@/lib/branding";
 import "./globals.css";
-
-const cairo = Cairo({
-  subsets: ["arabic", "latin"],
-  weight: ["400", "500", "600", "700"],
-  variable: "--font-cairo",
-  display: "swap",
-});
 
 export const metadata: Metadata = {
   title: APP_TITLE,
@@ -44,7 +36,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="ar" dir="rtl" className={cairo.variable} suppressHydrationWarning>
+    <html lang="ar" dir="rtl" suppressHydrationWarning>
       <body className="font-sans antialiased" suppressHydrationWarning>
         <Providers>{children}</Providers>
         <ServiceWorkerRegister />

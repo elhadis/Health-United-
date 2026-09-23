@@ -1,3 +1,5 @@
+/* Cairo loaded at runtime via CSS — avoids next/font Google fetch during `next build` */
+@import url("https://fonts.googleapis.com/css2?family=Cairo:wght@400;500;600;700&display=swap");
 @import "tailwindcss";
 
 @theme inline {
@@ -8,6 +10,7 @@
   --color-warning: #f59e0b;
   --color-success: #10b981;
   --color-banking: #6366f1;
+  --font-cairo: "Cairo", ui-sans-serif, system-ui, sans-serif;
   --font-sans: var(--font-cairo), ui-sans-serif, system-ui, sans-serif;
 }
 

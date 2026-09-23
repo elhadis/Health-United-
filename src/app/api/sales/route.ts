@@ -156,7 +156,12 @@ export async function POST(request: Request) {
               where: { id: batchId },
               select: { id: true, quantity: true, pharmacyId: true },
             });
-            if (!batch || batch.quantity < quantity) {
+            // Only honor explicit batch if it belongs to this pharmacy and has stock
+            if (
+              !batch ||
+              batch.quantity < quantity ||
+              batch.pharmacyId !== pharmacyId
+            ) {
               batchId = null;
             }
           }

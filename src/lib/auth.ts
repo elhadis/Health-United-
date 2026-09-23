@@ -3,7 +3,6 @@ import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 import {
   AUTH_COOKIE,
-  createSessionToken,
   verifySessionToken,
   type SessionUser,
 } from "@/lib/auth-session";

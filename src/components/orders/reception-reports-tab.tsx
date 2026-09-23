@@ -66,6 +66,7 @@ export function ReceptionReportsTab({
     queryKey: ["reception-report", range, pharmacyId ?? ""],
     queryFn: () => fetchReceptionReport(range, pharmacyId),
     refetchOnMount: "always",
+    refetchInterval: 15_000,
     staleTime: 0,
   });
 

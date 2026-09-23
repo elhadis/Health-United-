@@ -58,16 +58,20 @@ type LastReceipt = {
 
 async function fetchProducts(
   q: string,
-  preferPharmacy?: boolean
+  preferPharmacy?: boolean,
+  pharmacyId?: string | null
 ): Promise<ProductRow[]> {
   if (typeof navigator !== "undefined" && !navigator.onLine) {
     return searchCachedProducts(q);
   }
   try {
-    const location = preferPharmacy ? "pharmacy" : "all";
-    const res = await fetch(
-      `/api/products?q=${encodeURIComponent(q)}&location=${location}`
-    );
+    const params = new URLSearchParams();
+    if (q) params.set("q", q);
+    if (preferPharmacy) {
+      params.set("location", "pharmacy");
+      if (pharmacyId) params.set("pharmacyId", pharmacyId);
+    }
+    const res = await fetch(`/api/products?${params.toString()}`);
     if (!res.ok) throw new Error("fetch failed");
     const data = await res.json();
     let products = ((data.products ?? []) as ProductRow[]).filter(
@@ -140,7 +144,13 @@ export default function POSPage() {
   const { data: products = [], isFetching } = useQuery({
     queryKey: ["pos-products", deferredQuery, user?.pharmacyId ?? ""],
     queryFn: () =>
-      fetchProducts(deferredQuery, user?.role === "USER" && !!user?.pharmacyId),
+      fetchProducts(
+        deferredQuery,
+        user?.role === "USER" && !!user?.pharmacyId,
+        user?.pharmacyId
+      ),
+    refetchOnMount: "always",
+    staleTime: 0,
   });
 
   const { data: activeShift } = useQuery({
