@@ -118,10 +118,6 @@ export default function LoginClient() {
             {loading ? "جاري الدخول..." : "دخول"}
           </Button>
         </form>
-
-        <p className="mt-6 text-center text-xs text-slate-400">
-          الحساب الافتراضي: superadmin / AdminPassword123
-        </p>
       </motion.div>
     </div>
   );
