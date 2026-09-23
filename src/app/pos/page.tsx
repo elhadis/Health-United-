@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useEffect, useMemo, useState, useTransition } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { motion, AnimatePresence } from "framer-motion";
 import {
@@ -56,17 +56,41 @@ type LastReceipt = {
   createdAt: string;
 };
 
-async function fetchProducts(
-  q: string,
+/** Normalize Arabic/Latin text for case-insensitive, diacritic-tolerant search */
+function normalizeSearchText(value: string): string {
+  return value
+    .toLowerCase()
+    .normalize("NFKC")
+    .replace(/[\u064B-\u065F\u0670]/g, "")
+    .replace(/ـ/g, "")
+    .replace(/[أإآٱ]/g, "ا")
+    .replace(/ة/g, "ه")
+    .replace(/ى/g, "ي")
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function matchesProductSearch(product: ProductRow, rawQuery: string): boolean {
+  const q = normalizeSearchText(rawQuery);
+  if (!q) return true;
+  const haystack = normalizeSearchText(
+    [product.name, product.sku ?? "", product.manufacturer ?? ""].join(" ")
+  );
+  // Support multi-token search (spaces) — every token must match
+  return q.split(" ").every((token) => token && haystack.includes(token));
+}
+
+/** Fetch full pharmacy/in-stock catalog (search is applied client-side). */
+async function fetchAllPosProducts(
   preferPharmacy?: boolean,
   pharmacyId?: string | null
 ): Promise<ProductRow[]> {
   if (typeof navigator !== "undefined" && !navigator.onLine) {
-    return searchCachedProducts(q);
+    return (await searchCachedProducts("")) as ProductRow[];
   }
   try {
     const params = new URLSearchParams();
-    if (q) params.set("q", q);
     if (preferPharmacy) {
       params.set("location", "pharmacy");
       if (pharmacyId) params.set("pharmacyId", pharmacyId);
@@ -75,17 +99,15 @@ async function fetchProducts(
     if (!res.ok) throw new Error("fetch failed");
     const data = await res.json();
     let products = ((data.products ?? []) as ProductRow[]).filter(
-      (p) => (p.availableQty ?? 0) > 0 || !!p.batchId
+      (p) => (p.availableQty ?? 0) > 0
     );
     // If pharmacy filter returned nothing, fall back to all in-stock products
     if (preferPharmacy && products.length === 0) {
-      const fallback = await fetch(
-        `/api/products?q=${encodeURIComponent(q)}`
-      );
+      const fallback = await fetch("/api/products");
       if (fallback.ok) {
         const fb = await fallback.json();
         products = ((fb.products ?? []) as ProductRow[]).filter(
-          (p) => (p.availableQty ?? 0) > 0 || !!p.batchId
+          (p) => (p.availableQty ?? 0) > 0
         );
       }
     }
@@ -110,13 +132,13 @@ async function fetchProducts(
     );
     return products;
   } catch {
-    return searchCachedProducts(q);
+    return (await searchCachedProducts("")) as ProductRow[];
   }
 }
 
 export default function POSPage() {
   const [query, setQuery] = useState("");
-  const [deferredQuery, setDeferredQuery] = useState("");
+  const [debouncedQuery, setDebouncedQuery] = useState("");
   const [isPending, startTransition] = useTransition();
   const [checkoutMsg, setCheckoutMsg] = useState<string | null>(null);
   const [checkingOut, setCheckingOut] = useState(false);
@@ -141,17 +163,27 @@ export default function POSPage() {
   const { isOnline, setPendingCount } = useNetworkStore();
   const requireShift = user?.role === "USER";
 
-  const { data: products = [], isFetching } = useQuery({
-    queryKey: ["pos-products", deferredQuery, user?.pharmacyId ?? ""],
-    queryFn: () =>
-      fetchProducts(
-        deferredQuery,
-        user?.role === "USER" && !!user?.pharmacyId,
-        user?.pharmacyId
-      ),
+  // Debounce search input for smooth typing without lag
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      startTransition(() => setDebouncedQuery(query));
+    }, 200);
+    return () => window.clearTimeout(timer);
+  }, [query]);
+
+  const preferPharmacy = user?.role === "USER" && !!user?.pharmacyId;
+
+  const { data: catalog = [], isFetching } = useQuery({
+    queryKey: ["pos-products", user?.pharmacyId ?? "", preferPharmacy],
+    queryFn: () => fetchAllPosProducts(preferPharmacy, user?.pharmacyId),
     refetchOnMount: "always",
     staleTime: 0,
   });
+
+  const products = useMemo(
+    () => catalog.filter((p) => matchesProductSearch(p, debouncedQuery)),
+    [catalog, debouncedQuery]
+  );
 
   const { data: activeShift } = useQuery({
     queryKey: ["current-shift"],
@@ -177,7 +209,6 @@ export default function POSPage() {
 
   const handleSearch = (value: string) => {
     setQuery(value);
-    startTransition(() => setDeferredQuery(value));
   };
 
   const handleAddProduct = (product: ProductRow) => {
@@ -350,7 +381,9 @@ export default function POSPage() {
           </div>
 
           {(isFetching || isPending) && (
-            <p className="text-xs text-slate-500">جاري البحث...</p>
+            <p className="text-xs text-slate-500">
+              {isFetching ? "جاري تحميل المنتجات..." : "جاري التصفية..."}
+            </p>
           )}
 
           <div className="grid gap-3 sm:grid-cols-2">
@@ -358,10 +391,13 @@ export default function POSPage() {
               {products.map((product) => {
                 const expired = product.expiryDate ? isExpired(product.expiryDate) : false;
                 const near = product.expiryDate ? isNearExpiry(product.expiryDate) : false;
+                const threshold = product.lowStockThreshold ?? 10;
+                const isLow =
+                  product.availableQty > 0 && product.availableQty <= threshold;
                 const canAdd = !expired && product.availableQty > 0;
                 return (
                   <motion.div
-                    key={`${product.id}-${product.batchId}`}
+                    key={`${product.id}-${product.batchId ?? "nobatch"}`}
                     layout
                     initial={{ opacity: 0, y: 10 }}
                     animate={{ opacity: 1, y: 0 }}
@@ -391,12 +427,20 @@ export default function POSPage() {
                           <Pill className="h-4 w-4" />
                         )}
                       </div>
-                      <Badge variant={product.category === "HUMAN" ? "default" : "warning"}>
-                        {product.category === "HUMAN" ? "بشري" : "بيطري"}
-                      </Badge>
+                      <div className="flex flex-wrap items-center justify-end gap-1.5">
+                        <Badge variant={product.category === "HUMAN" ? "default" : "warning"}>
+                          {product.category === "HUMAN" ? "بشري" : "بيطري"}
+                        </Badge>
+                        {canAdd && (
+                          <Badge variant={isLow ? "warning" : "success"}>
+                            {isLow ? "كمية منخفضة" : "متوفر"}
+                          </Badge>
+                        )}
+                      </div>
                     </div>
                     <h3 className="font-semibold text-secondary">{product.name}</h3>
                     <p className="mt-1 text-xs text-slate-500">
+                      {product.sku ? `${product.sku} · ` : ""}
                       {product.manufacturer} · {product.unitType}
                     </p>
                     <div className="mt-3 flex items-center justify-between">

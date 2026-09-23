@@ -118,14 +118,29 @@ export async function cacheProducts(products: CachedProduct[]): Promise<void> {
 export async function searchCachedProducts(query: string): Promise<CachedProduct[]> {
   if (!offlineDb) return [];
   const all = await offlineDb.cachedProducts.toArray();
-  if (!query.trim()) return all.slice(0, 50);
-  const q = query.toLowerCase();
-  return all.filter(
-    (p) =>
-      p.name.toLowerCase().includes(q) ||
-      (p.sku?.toLowerCase().includes(q) ?? false) ||
-      (p.manufacturer?.toLowerCase().includes(q) ?? false)
-  );
+  const q = query.trim();
+  if (!q) return all.filter((p) => (p.availableQty ?? 0) > 0);
+
+  const normalize = (s: string) =>
+    s
+      .toLowerCase()
+      .normalize("NFKC")
+      .replace(/[\u064B-\u065F\u0670]/g, "")
+      .replace(/ـ/g, "")
+      .replace(/[أإآٱ]/g, "ا")
+      .replace(/ة/g, "ه")
+      .replace(/ى/g, "ي")
+      .replace(/\s+/g, " ")
+      .trim();
+
+  const nq = normalize(q);
+  return all.filter((p) => {
+    if ((p.availableQty ?? 0) <= 0) return false;
+    const haystack = normalize(
+      [p.name, p.sku ?? "", p.manufacturer ?? ""].join(" ")
+    );
+    return haystack.includes(nq);
+  });
 }
 
 export type SyncResult = {

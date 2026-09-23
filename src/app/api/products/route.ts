@@ -67,7 +67,6 @@ export async function GET(request: Request) {
         },
       },
       orderBy: { name: "asc" },
-      take: 100,
     });
 
     const mapped = products.map((p) => {
