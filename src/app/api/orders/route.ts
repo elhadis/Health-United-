@@ -355,7 +355,9 @@ async function deductWarehouseStockForOrder(
             productId: item.productId,
             batchNumber: `RCV-${Date.now().toString(36).toUpperCase()}`,
             quantity: need,
-            costPrice: product?.costPrice ?? item.product?.costPrice ?? 0,
+            costPrice: Number(
+              product?.costPrice ?? item.product?.costPrice ?? 0
+            ),
             expiryDate: new Date(Date.now() + 365 * 86400000),
             pharmacyId: order.pharmacyId,
             warehouseId: null,
