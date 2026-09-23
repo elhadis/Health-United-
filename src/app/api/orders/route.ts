@@ -213,7 +213,12 @@ function rankWarehouseBatch(
   return 4;
 }
 
-/** FEFO deduct from warehouse batches only (pharmacy credit happens on CONFIRMED). */
+/**
+ * Transfer stock helper:
+ * - mode "deduct": FEFO warehouse batch deduction (approval)
+ * - mode "credit": pharmacy stock crediting (cashier confirmation)
+ * - mode "both": deduct warehouse then credit pharmacy in one step
+ */
 async function deductWarehouseStockForOrder(
   tx: Prisma.TransactionClient,
   order: {
@@ -227,98 +232,17 @@ async function deductWarehouseStockForOrder(
         name: string;
         unitType?: UnitType | string;
         unitsPerBox?: number;
-      } | null;
-    }>;
-  }
-) {
-  for (const item of order.items) {
-    const product =
-      (await tx.product.findUnique({
-        where: { id: item.productId },
-        select: {
-          id: true,
-          name: true,
-          unitType: true,
-          unitsPerBox: true,
-        },
-      })) ?? null;
-
-    const productName = product?.name ?? item.product?.name ?? "منتج";
-    const productUnit = product?.unitType ?? item.product?.unitType ?? item.unitType;
-    const unitsPerBox =
-      product?.unitsPerBox ?? item.product?.unitsPerBox ?? 1;
-
-    const need = toWarehouseStockQuantity(
-      item.quantity,
-      item.unitType,
-      productUnit,
-      unitsPerBox
-    );
-
-    if (need <= 0) {
-      throw new Error(`كمية غير صالحة للمنتج «${productName}»`);
-    }
-
-    const batches = await tx.stockBatch.findMany({
-      where: warehouseBatchWhere(item.productId, order.warehouseId),
-      orderBy: { expiryDate: "asc" },
-    });
-
-    batches.sort((a, b) => {
-      const rank =
-        rankWarehouseBatch(a, order.warehouseId) -
-        rankWarehouseBatch(b, order.warehouseId);
-      if (rank !== 0) return rank;
-      return a.expiryDate.getTime() - b.expiryDate.getTime();
-    });
-
-    const available = batches.reduce((sum, b) => sum + b.quantity, 0);
-
-    if (available < need) {
-      throw new Error(
-        `المخزون غير كافٍ للمنتج «${productName}». المطلوب: ${need}، المتاح في المستودع: ${available}`
-      );
-    }
-
-    let remaining = need;
-    for (const batch of batches) {
-      if (remaining <= 0) break;
-      const take = Math.min(batch.quantity, remaining);
-
-      await tx.stockBatch.update({
-        where: { id: batch.id },
-        data: { quantity: { decrement: take } },
-      });
-
-      remaining -= take;
-    }
-  }
-}
-
-/** Credit pharmacy stock when cashier confirms receipt (مؤكد من الصيدلية). */
-async function creditPharmacyStockForOrder(
-  tx: Prisma.TransactionClient,
-  order: {
-    pharmacyId: string | null;
-    warehouseId: string | null;
-    items: Array<{
-      productId: string;
-      quantity: number;
-      unitType: UnitType | string;
-      product: {
-        name: string;
-        unitType?: UnitType | string;
-        unitsPerBox?: number;
         costPrice?: unknown;
         manufacturer?: string | null;
         country?: string | null;
       } | null;
     }>;
-  }
+  },
+  options: { mode?: "deduct" | "credit" | "both" } = {}
 ) {
-  if (!order.pharmacyId) {
-    throw new Error("تعذر تأكيد الاستلام — الصيدلية غير محددة لهذا الطلب");
-  }
+  const mode = options.mode ?? "deduct";
+  const doDeduct = mode === "deduct" || mode === "both";
+  const doCredit = mode === "credit" || mode === "both";
 
   for (const item of order.items) {
     const product = await tx.product.findUnique({
@@ -335,49 +259,112 @@ async function creditPharmacyStockForOrder(
     });
 
     const productName = product?.name ?? item.product?.name ?? "منتج";
-    const productUnit = product?.unitType ?? item.product?.unitType ?? item.unitType;
+    const productUnit =
+      product?.unitType ?? item.product?.unitType ?? item.unitType;
     const unitsPerBox =
       product?.unitsPerBox ?? item.product?.unitsPerBox ?? 1;
-    const qty = toWarehouseStockQuantity(
+
+    const need = toWarehouseStockQuantity(
       item.quantity,
       item.unitType,
       productUnit,
       unitsPerBox
     );
 
-    if (qty <= 0) {
+    if (need <= 0) {
       throw new Error(`كمية غير صالحة للمنتج «${productName}»`);
     }
 
-    // Prefer merging into an existing pharmacy batch for the same product
-    const existingBatch = await tx.stockBatch.findFirst({
-      where: {
-        productId: item.productId,
-        pharmacyId: order.pharmacyId,
-      },
-      orderBy: { expiryDate: "desc" },
-    });
+    // --- FEFO warehouse deduction ---
+    if (doDeduct) {
+      const batches = await tx.stockBatch.findMany({
+        where: warehouseBatchWhere(item.productId, order.warehouseId),
+        orderBy: { expiryDate: "asc" },
+      });
 
-    if (existingBatch) {
-      await tx.stockBatch.update({
-        where: { id: existingBatch.id },
-        data: { quantity: { increment: qty } },
+      batches.sort((a, b) => {
+        const rank =
+          rankWarehouseBatch(a, order.warehouseId) -
+          rankWarehouseBatch(b, order.warehouseId);
+        if (rank !== 0) return rank;
+        return a.expiryDate.getTime() - b.expiryDate.getTime();
       });
-    } else {
-      await tx.stockBatch.create({
-        data: {
+
+      const available = batches.reduce((sum, b) => sum + b.quantity, 0);
+      if (available < need) {
+        throw new Error(
+          `المخزون غير كافٍ للمنتج «${productName}». المطلوب: ${need}، المتاح في المستودع: ${available}`
+        );
+      }
+
+      let remaining = need;
+      for (const batch of batches) {
+        if (remaining <= 0) break;
+        const take = Math.min(batch.quantity, remaining);
+
+        await tx.stockBatch.update({
+          where: { id: batch.id },
+          data: { quantity: { decrement: take } },
+        });
+
+        // When mode is "both", move deducted qty into pharmacy immediately
+        if (doCredit && order.pharmacyId) {
+          await tx.stockBatch.create({
+            data: {
+              productId: item.productId,
+              batchNumber: batch.batchNumber,
+              quantity: take,
+              costPrice: batch.costPrice,
+              expiryDate: batch.expiryDate,
+              pharmacyId: order.pharmacyId,
+              warehouseId: null,
+              manufacturer: batch.manufacturer,
+              country: batch.country,
+            },
+          });
+        }
+
+        remaining -= take;
+      }
+    }
+
+    // --- Pharmacy credit only (confirmation) ---
+    if (doCredit && !doDeduct) {
+      if (!order.pharmacyId) {
+        throw new Error(
+          "تعذر تأكيد الاستلام — الصيدلية غير محددة لهذا الطلب"
+        );
+      }
+
+      const existingBatch = await tx.stockBatch.findFirst({
+        where: {
           productId: item.productId,
-          batchNumber: `RCV-${Date.now().toString(36).toUpperCase()}`,
-          quantity: qty,
-          costPrice: product?.costPrice ?? item.product?.costPrice ?? 0,
-          expiryDate: new Date(Date.now() + 365 * 86400000),
           pharmacyId: order.pharmacyId,
-          warehouseId: null,
-          manufacturer:
-            product?.manufacturer ?? item.product?.manufacturer ?? null,
-          country: product?.country ?? item.product?.country ?? null,
         },
+        orderBy: { expiryDate: "desc" },
       });
+
+      if (existingBatch) {
+        await tx.stockBatch.update({
+          where: { id: existingBatch.id },
+          data: { quantity: { increment: need } },
+        });
+      } else {
+        await tx.stockBatch.create({
+          data: {
+            productId: item.productId,
+            batchNumber: `RCV-${Date.now().toString(36).toUpperCase()}`,
+            quantity: need,
+            costPrice: product?.costPrice ?? item.product?.costPrice ?? 0,
+            expiryDate: new Date(Date.now() + 365 * 86400000),
+            pharmacyId: order.pharmacyId,
+            warehouseId: null,
+            manufacturer:
+              product?.manufacturer ?? item.product?.manufacturer ?? null,
+            country: product?.country ?? item.product?.country ?? null,
+          },
+        });
+      }
     }
   }
 }
@@ -623,16 +610,20 @@ export async function PATCH(request: Request) {
       if (shouldDeduct) {
         try {
           const order = await prisma.$transaction(async (tx) => {
-            await deductWarehouseStockForOrder(tx, {
-              warehouseId: existing.warehouseId,
-              pharmacyId: existing.pharmacyId,
-              items: existing.items.map((item) => ({
-                productId: item.productId,
-                quantity: item.quantity,
-                unitType: item.unitType,
-                product: item.product,
-              })),
-            });
+            await deductWarehouseStockForOrder(
+              tx,
+              {
+                warehouseId: existing.warehouseId,
+                pharmacyId: existing.pharmacyId,
+                items: existing.items.map((item) => ({
+                  productId: item.productId,
+                  quantity: item.quantity,
+                  unitType: item.unitType,
+                  product: item.product,
+                })),
+              },
+              { mode: "deduct" }
+            );
 
             return tx.order.update({
               where: { id },
@@ -671,16 +662,20 @@ export async function PATCH(request: Request) {
       if (shouldCreditPharmacy) {
         try {
           const order = await prisma.$transaction(async (tx) => {
-            await creditPharmacyStockForOrder(tx, {
-              pharmacyId: existing.pharmacyId,
-              warehouseId: existing.warehouseId,
-              items: existing.items.map((item) => ({
-                productId: item.productId,
-                quantity: item.quantity,
-                unitType: item.unitType,
-                product: item.product,
-              })),
-            });
+            await deductWarehouseStockForOrder(
+              tx,
+              {
+                pharmacyId: existing.pharmacyId,
+                warehouseId: existing.warehouseId,
+                items: existing.items.map((item) => ({
+                  productId: item.productId,
+                  quantity: item.quantity,
+                  unitType: item.unitType,
+                  product: item.product,
+                })),
+              },
+              { mode: "credit" }
+            );
 
             return tx.order.update({
               where: { id },
