@@ -14,6 +14,13 @@ export default function WarehouseError({
 }) {
   useEffect(() => {
     console.error("[warehouse] render error:", error);
+    const isChunkError =
+      error?.name === "ChunkLoadError" ||
+      /Loading chunk|Failed to fetch dynamically imported module/i.test(error?.message ?? "");
+    if (isChunkError && !sessionStorage.getItem("warehouse-chunk-reload")) {
+      sessionStorage.setItem("warehouse-chunk-reload", "1");
+      window.location.reload();
+    }
   }, [error]);
 
   return (

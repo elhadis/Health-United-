@@ -103,8 +103,14 @@ function normalizeDemoBatch(b: RawDemoBatch, idx: number): BatchRow {
 }
 
 async function fetchWarehouse(): Promise<BatchRow[]> {
-  const res = await fetch("/api/products?location=all");
-  const data = await res.json().catch(() => null);
+  let res: Response;
+  let data: { error?: string; batches?: unknown; products?: unknown } | null;
+  try {
+    res = await fetch("/api/products?location=all");
+    data = await res.json().catch(() => null);
+  } catch {
+    throw new Error("تعذر الاتصال بالخادم — تحقق من الاتصال بالإنترنت");
+  }
   if (!res.ok) {
     throw new Error(data?.error || "فشل تحميل بيانات المستودع");
   }
