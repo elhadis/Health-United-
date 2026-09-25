@@ -121,8 +121,9 @@ function mapOrderForClient(order: {
     quantity: number;
     unitType: string;
     productId?: string;
-    product?: { id?: string; name: string } | null;
+    product?: { id?: string; name: string; category?: string | null } | null;
     productName?: string;
+    notes?: string | null;
   }>;
 }) {
   return {
@@ -152,8 +153,28 @@ function mapOrderForClient(order: {
       productName: item.product?.name ?? item.productName ?? "منتج",
       quantity: item.quantity,
       unitType: item.unitType,
+      category: item.product?.category ?? null,
+      batchNumbers: parseBatchMarker(item.notes),
     })),
   };
+}
+
+const BATCH_MARKER = /\[BATCHES:([^\]]*)\]/;
+
+/** Batch numbers deducted at approval, stored on OrderItem.notes as "[BATCHES:B1×5,B2×3]". */
+function parseBatchMarker(notes?: string | null): string[] {
+  const match = notes?.match(BATCH_MARKER);
+  if (!match) return [];
+  return match[1]
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+function withBatchMarker(notes: string | null | undefined, entries: string[]): string {
+  const base = (notes ?? "").replace(BATCH_MARKER, "").trim();
+  const marker = `[BATCHES:${entries.join(",")}]`;
+  return base ? `${base} ${marker}` : marker;
 }
 
 /**
@@ -185,10 +206,10 @@ function warehouseBatchWhere(
   productId: string,
   warehouseId: string | null
 ): Prisma.StockBatchWhereInput {
+  // Warehouse stock only: pharmacy-held batches must never be deducted by a transfer.
   const warehouseClauses: Prisma.StockBatchWhereInput[] = [
     // Unassigned / central stock (common when products are added without an explicit warehouseId)
-    { pharmacyId: null },
-    // Any batch explicitly tagged to a warehouse
+    { warehouseId: null },
     { warehouseId: { not: null } },
   ];
   if (warehouseId) {
@@ -198,6 +219,7 @@ function warehouseBatchWhere(
   return {
     productId,
     quantity: { gt: 0 },
+    pharmacyId: null,
     OR: warehouseClauses,
   };
 }
@@ -225,6 +247,8 @@ async function deductWarehouseStockForOrder(
     warehouseId: string | null;
     pharmacyId: string | null;
     items: Array<{
+      id?: string;
+      notes?: string | null;
       productId: string;
       quantity: number;
       unitType: UnitType | string;
@@ -298,6 +322,7 @@ async function deductWarehouseStockForOrder(
       }
 
       let remaining = need;
+      const taken: string[] = [];
       for (const batch of batches) {
         if (remaining <= 0) break;
         const take = Math.min(batch.quantity, remaining);
@@ -306,6 +331,7 @@ async function deductWarehouseStockForOrder(
           where: { id: batch.id },
           data: { quantity: { decrement: take } },
         });
+        taken.push(`${batch.batchNumber}×${take}`);
 
         // When mode is "both", move deducted qty into pharmacy immediately
         if (doCredit && order.pharmacyId) {
@@ -325,6 +351,13 @@ async function deductWarehouseStockForOrder(
         }
 
         remaining -= take;
+      }
+
+      if (item.id && taken.length > 0) {
+        await tx.orderItem.update({
+          where: { id: item.id },
+          data: { notes: withBatchMarker(item.notes, taken) },
+        });
       }
     }
 
@@ -618,6 +651,8 @@ export async function PATCH(request: Request) {
                 warehouseId: existing.warehouseId,
                 pharmacyId: existing.pharmacyId,
                 items: existing.items.map((item) => ({
+                  id: item.id,
+                  notes: item.notes,
                   productId: item.productId,
                   quantity: item.quantity,
                   unitType: item.unitType,
@@ -698,6 +733,8 @@ export async function PATCH(request: Request) {
                 pharmacyId: creditPharmacyId,
                 warehouseId: existing.warehouseId,
                 items: existing.items.map((item) => ({
+                  id: item.id,
+                  notes: item.notes,
                   productId: item.productId,
                   quantity: item.quantity,
                   unitType: item.unitType,

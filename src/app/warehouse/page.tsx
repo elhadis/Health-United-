@@ -52,6 +52,7 @@ type RawBatch = {
   costPrice?: number | string | null;
   expiryDate?: string | null;
   warehouseId?: string | null;
+  pharmacyId?: string | null;
 };
 
 type RawProduct = {
@@ -118,7 +119,9 @@ async function fetchWarehouse(): Promise<BatchRow[]> {
   }
 
   if (Array.isArray(data?.batches)) {
-    return (data.batches as RawDemoBatch[]).map(normalizeDemoBatch);
+    return (data.batches as RawDemoBatch[])
+      .map(normalizeDemoBatch)
+      .filter((b) => b.location !== "PHARMACY");
   }
 
   const products: RawProduct[] = Array.isArray(data?.products) ? data.products : [];
@@ -136,7 +139,10 @@ async function fetchWarehouse(): Promise<BatchRow[]> {
       unitType: p.unitType ?? "",
     };
 
-    const productBatches = Array.isArray(p.batches) ? p.batches : [];
+    // Stock already transferred to a pharmacy belongs to that pharmacy, not the warehouse table.
+    const productBatches = (Array.isArray(p.batches) ? p.batches : []).filter(
+      (b) => b && !b.pharmacyId
+    );
     if (productBatches.length > 0) {
       for (const [bIdx, b] of productBatches.entries()) {
         if (!b) continue;
@@ -152,14 +158,14 @@ async function fetchWarehouse(): Promise<BatchRow[]> {
         });
       }
     } else {
-      // Products whose stock is fully sold/transferred have no in-stock batches
+      // Products whose warehouse stock is fully sold/transferred: one zero-balance row
       batches.push({
         ...base,
-        id: p.batchId ?? productId,
-        batchNumber: p.batchNumber ?? "-",
-        quantity: toNumber(p.availableQty),
+        id: productId,
+        batchNumber: "-",
+        quantity: 0,
         costPrice: toNumber(p.costPrice),
-        expiryDate: p.expiryDate ?? "",
+        expiryDate: "",
         location: "WAREHOUSE",
       });
     }

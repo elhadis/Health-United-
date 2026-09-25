@@ -33,6 +33,7 @@ export type TransferOrderRow = {
   createdAt: string;
   approvedAt?: string | null;
   dispatchedAt?: string | null;
+  confirmedAt?: string | null;
   pharmacyName?: string | null;
   warehouseName?: string | null;
   requesterName?: string | null;
@@ -41,10 +42,53 @@ export type TransferOrderRow = {
     productName: string;
     quantity: number;
     unitType: string;
+    category?: string | null;
+    batchNumbers?: string[];
   }[];
 };
 
 type FilterKey = "today" | "week" | "month" | "custom";
+type CategoryKey = "ALL" | "HUMAN" | "VETERINARY";
+
+const OUTGOING_STATUSES = ["APPROVED", "DISPATCHED", "CONFIRMED"];
+
+type DetailRow = {
+  key: string;
+  orderNumber: string;
+  productName: string;
+  batch: string;
+  quantity: number;
+  unitType: string;
+  category: string | null;
+  date: string;
+  status: TransferOrderRow["status"];
+  pharmacyName: string | null;
+};
+
+function categoryLabel(category?: string | null) {
+  if (category === "HUMAN") return "بشري";
+  if (category === "VETERINARY") return "بيطري";
+  return "-";
+}
+
+function formatDateTime(value: string) {
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return "-";
+  return d.toLocaleString("ar-SD", {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function statusLabelEn(status: TransferOrderRow["status"]) {
+  if (status === "APPROVED") return "Approved";
+  if (status === "DISPATCHED") return "Dispatched";
+  if (status === "CONFIRMED") return "Confirmed";
+  return status;
+}
 
 function startOfDay(d: Date) {
   const x = new Date(d);
@@ -90,7 +134,7 @@ function filterLabel(filter: FilterKey) {
 function statusLabel(status: TransferOrderRow["status"]) {
   if (status === "APPROVED") return "معتمد";
   if (status === "DISPATCHED") return "مُرسل";
-  if (status === "CONFIRMED") return "مؤكد";
+  if (status === "CONFIRMED") return "مؤكد من الصيدلية";
   if (status === "PENDING") return "قيد الانتظار";
   return "مرفوض";
 }
@@ -101,6 +145,7 @@ export function TransferAnalyticsTab({
   orders: TransferOrderRow[];
 }) {
   const [filter, setFilter] = useState<FilterKey>("week");
+  const [category, setCategory] = useState<CategoryKey>("ALL");
   const [customFrom, setCustomFrom] = useState("");
   const [customTo, setCustomTo] = useState("");
   const [busy, setBusy] = useState(false);
@@ -111,11 +156,40 @@ export function TransferAnalyticsTab({
   );
 
   const filtered = useMemo(() => {
-    return orders.filter((o) => {
-      const t = new Date(o.approvedAt || o.createdAt).getTime();
-      return t >= bounds.from.getTime() && t <= bounds.to.getTime();
-    });
-  }, [orders, bounds]);
+    return (orders ?? [])
+      .filter((o) => {
+        const t = new Date(o.approvedAt || o.createdAt).getTime();
+        return t >= bounds.from.getTime() && t <= bounds.to.getTime();
+      })
+      .map((o) =>
+        category === "ALL"
+          ? o
+          : { ...o, items: (o.items ?? []).filter((i) => i.category === category) }
+      )
+      .filter((o) => category === "ALL" || o.items.length > 0);
+  }, [orders, bounds, category]);
+
+  const detailRows = useMemo<DetailRow[]>(() => {
+    const rows: DetailRow[] = [];
+    for (const order of filtered) {
+      if (!OUTGOING_STATUSES.includes(order.status)) continue;
+      (order.items ?? []).forEach((item, idx) => {
+        rows.push({
+          key: `${order.id}-${idx}`,
+          orderNumber: order.orderNumber,
+          productName: item.productName,
+          batch: (item.batchNumbers ?? []).join("، ") || "-",
+          quantity: Number(item.quantity || 0),
+          unitType: item.unitType,
+          category: item.category ?? null,
+          date: order.approvedAt || order.createdAt,
+          status: order.status,
+          pharmacyName: order.pharmacyName ?? null,
+        });
+      });
+    }
+    return rows.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+  }, [filtered]);
 
   const approvedOrders = useMemo(
     () =>
@@ -174,13 +248,17 @@ export function TransferAnalyticsTab({
   }, [approvedOrders]);
 
   const buildPayload = (): TransferPdfPayload => ({
-    title: "Transfer Analytics Report",
+    title: "Transfers & Dispatches Report",
     reference: `TRF-${Date.now().toString(36).toUpperCase()}`,
     date: new Date().toLocaleDateString("en-GB"),
     partyLabel: "Company",
     partyName: COMPANY_NAME_AR,
     meta: [
-      { label: "Period", value: filterLabel(filter) },
+      { label: "Period", value: filter === "custom" ? "Custom range" : filter },
+      {
+        label: "Category",
+        value: category === "ALL" ? "All" : category === "HUMAN" ? "Human" : "Veterinary",
+      },
       {
         label: "From",
         value: bounds.from.toLocaleDateString("en-GB"),
@@ -196,17 +274,35 @@ export function TransferAnalyticsTab({
       `Cashier / Pharmacy transfers: ${pharmacyTransfers.length}`,
     ],
     items:
-      lineItems.length > 0
-        ? lineItems
-        : [{ name: "No approved transfers in period", quantity: 0, unitType: "-" }],
+      detailRows.length > 0
+        ? detailRows.map((row) => ({
+            name: row.productName,
+            quantity: row.quantity,
+            unitType: row.unitType,
+            batch: row.batch === "-" ? "-" : row.batch.replace(/،\s*/g, ", "),
+            category:
+              row.category === "HUMAN" ? "Human" : row.category === "VETERINARY" ? "Vet" : "-",
+            date: new Date(row.date).toLocaleString("en-GB", {
+              day: "2-digit",
+              month: "2-digit",
+              year: "2-digit",
+              hour: "2-digit",
+              minute: "2-digit",
+            }),
+            status: statusLabelEn(row.status),
+          }))
+        : lineItems.length > 0
+          ? lineItems
+          : [{ name: "No approved transfers in period", quantity: 0, unitType: "-" }],
     notes: `Generated for warehouse transfer analytics — ${COMPANY_NAME_AR}`,
   });
 
   const shareText = () =>
     [
       COMPANY_NAME_AR,
-      "تقرير التحويلات",
+      "تقرير التحويلات والطلبات الصادرة",
       `الفترة: ${filterLabel(filter)}`,
+      `التصنيف: ${category === "ALL" ? "الكل" : categoryLabel(category)}`,
       `الطلبات المعتمدة: ${approvedOrders.length}`,
       `الكميات المُرسلة: ${dispatchedQty}`,
       `تحويلات الصيدلية/الكاشير: ${pharmacyTransfers.length}`,
@@ -313,6 +409,25 @@ export function TransferAnalyticsTab({
         </div>
       )}
 
+      <div className="flex flex-wrap items-center gap-2">
+        {(
+          [
+            ["ALL", "الكل"],
+            ["HUMAN", "بشري"],
+            ["VETERINARY", "بيطري"],
+          ] as const
+        ).map(([key, label]) => (
+          <Button
+            key={key}
+            size="sm"
+            variant={category === key ? "default" : "outline"}
+            onClick={() => setCategory(key)}
+          >
+            {label}
+          </Button>
+        ))}
+      </div>
+
       <div className="grid gap-3 sm:grid-cols-2 md:grid-cols-3">
         <Card className="transition-all hover:shadow-md hover:ring-2 hover:ring-primary/20">
           <CardContent className="flex items-center gap-3 p-4">
@@ -384,6 +499,61 @@ export function TransferAnalyticsTab({
               <Badge variant="default">{statusLabel(order.status)}</Badge>
             </div>
           ))}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader className="pb-2">
+          <CardTitle className="text-base">
+            التحويلات والطلبات الصادرة — تفاصيل الأصناف
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="table-scroll overflow-x-auto p-0">
+          {detailRows.length === 0 ? (
+            <p className="p-6 text-sm text-slate-500">لا توجد أصناف محولة في هذه الفترة</p>
+          ) : (
+            <table className="w-full min-w-[760px] text-sm">
+              <thead className="bg-slate-50 text-slate-500">
+                <tr>
+                  <th className="px-4 py-3 text-right font-medium">المنتج</th>
+                  <th className="px-4 py-3 text-right font-medium">رقم الدفعة</th>
+                  <th className="px-4 py-3 text-right font-medium">الكمية المحولة</th>
+                  <th className="px-4 py-3 text-right font-medium">التصنيف</th>
+                  <th className="px-4 py-3 text-right font-medium">التاريخ والوقت</th>
+                  <th className="px-4 py-3 text-right font-medium">الحالة</th>
+                </tr>
+              </thead>
+              <tbody>
+                {detailRows.map((row) => (
+                  <tr key={row.key} className="border-t border-slate-100">
+                    <td className="px-4 py-3">
+                      <p className="font-medium">{row.productName}</p>
+                      <p className="text-xs text-slate-500">
+                        {row.orderNumber}
+                        {row.pharmacyName ? ` · ${row.pharmacyName}` : ""}
+                      </p>
+                    </td>
+                    <td className="px-4 py-3 font-mono text-xs">{row.batch}</td>
+                    <td className="px-4 py-3">
+                      <span className="font-semibold">{row.quantity}</span>{" "}
+                      <span className="text-xs text-slate-400">{row.unitType}</span>
+                    </td>
+                    <td className="px-4 py-3">
+                      <Badge variant={row.category === "VETERINARY" ? "warning" : "default"}>
+                        {categoryLabel(row.category)}
+                      </Badge>
+                    </td>
+                    <td className="px-4 py-3 text-xs">{formatDateTime(row.date)}</td>
+                    <td className="px-4 py-3">
+                      <Badge variant={row.status === "CONFIRMED" ? "success" : "default"}>
+                        {statusLabel(row.status)}
+                      </Badge>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
         </CardContent>
       </Card>
     </div>

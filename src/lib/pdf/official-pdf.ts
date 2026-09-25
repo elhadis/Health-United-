@@ -171,6 +171,10 @@ export type TransferPdfItem = {
   name: string;
   quantity: number;
   unitType: string;
+  batch?: string;
+  category?: string;
+  date?: string;
+  status?: string;
 };
 
 export type TransferPdfPayload = {
@@ -250,28 +254,50 @@ export async function buildTransferPdf(
     }
   }
 
+  const detailed = payload.items.some(
+    (i) => i.batch || i.category || i.date || i.status
+  );
+  const clip = (text: string, max: number) =>
+    text.length > max ? `${text.slice(0, max - 2)}..` : text;
+
   y += 4;
   doc.setFillColor(15, 23, 42);
   doc.setTextColor(255);
   doc.rect(18, y, pageWidth - 36, 8, "F");
-  doc.setFontSize(9);
-  doc.text("Item", 22, y + 5.5);
-  doc.text("Qty", 120, y + 5.5);
-  doc.text("Unit", 150, y + 5.5);
+  doc.setFontSize(detailed ? 8 : 9);
+  if (detailed) {
+    doc.text("Item", 20, y + 5.5);
+    doc.text("Batch", 70, y + 5.5);
+    doc.text("Qty", 104, y + 5.5);
+    doc.text("Category", 124, y + 5.5);
+    doc.text("Date", 146, y + 5.5);
+    doc.text("Status", 174, y + 5.5);
+  } else {
+    doc.text("Item", 22, y + 5.5);
+    doc.text("Qty", 120, y + 5.5);
+    doc.text("Unit", 150, y + 5.5);
+  }
   doc.setTextColor(0);
   y += 12;
 
-  doc.setFontSize(9);
+  doc.setFontSize(detailed ? 8 : 9);
   for (const item of payload.items) {
     if (y > 270) {
       doc.addPage();
       y = 20;
     }
-    const name =
-      item.name.length > 48 ? `${item.name.slice(0, 46)}...` : item.name;
-    doc.text(name, 22, y);
-    doc.text(String(item.quantity), 120, y);
-    doc.text(item.unitType, 150, y);
+    if (detailed) {
+      doc.text(clip(item.name, 30), 20, y);
+      doc.text(clip(item.batch || "-", 20), 70, y);
+      doc.text(`${item.quantity} ${item.unitType}`, 104, y);
+      doc.text(item.category || "-", 124, y);
+      doc.text(item.date || "-", 146, y);
+      doc.text(item.status || "-", 174, y);
+    } else {
+      doc.text(clip(item.name, 48), 22, y);
+      doc.text(String(item.quantity), 120, y);
+      doc.text(item.unitType, 150, y);
+    }
     y += 6.5;
   }
 
