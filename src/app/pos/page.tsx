@@ -171,7 +171,7 @@ export default function POSPage() {
     return () => window.clearTimeout(timer);
   }, [query]);
 
-  const preferPharmacy = user?.role === "USER" && !!user?.pharmacyId;
+  const preferPharmacy = user?.role === "USER";
 
   const { data: catalog = [], isFetching } = useQuery({
     queryKey: ["pos-products", user?.pharmacyId ?? "", preferPharmacy],

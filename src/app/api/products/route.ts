@@ -31,14 +31,130 @@ async function resolveDefaultWarehouseId(
   });
   return first?.id ?? null;
 }
+async function resolvePharmacyId(requested?: string | null): Promise<string | null> {
+  const session = await getSessionUser();
+  for (const candidate of [requested, session?.pharmacyId]) {
+    if (!candidate) continue;
+    const exists = await prisma.pharmacy.findUnique({
+      where: { id: candidate },
+      select: { id: true },
+    });
+    if (exists) return exists.id;
+  }
+  const first = await prisma.pharmacy.findFirst({
+    orderBy: { createdAt: "asc" },
+    select: { id: true },
+  });
+  return first?.id ?? null;
+}
+
+function toStockUnits(
+  qty: number,
+  orderUnit: string,
+  productUnit: string,
+  unitsPerBox: number
+): number {
+  const n = Math.max(0, Math.floor(Number(qty) || 0));
+  const factor = Math.max(1, Math.floor(Number(unitsPerBox) || 1));
+  const orderIsBox = orderUnit === "BOX" || orderUnit === "CARTON";
+  const productIsBox = productUnit === "BOX" || productUnit === "CARTON";
+  if (orderIsBox && !productIsBox) return n * factor;
+  if (!orderIsBox && productIsBox && orderUnit !== productUnit) {
+    return Math.ceil(n / factor);
+  }
+  return n;
+}
+
+/**
+ * Confirmed transfers ("مؤكد من الصيدلية") that never produced pharmacy stock
+ * (e.g. confirmed before stock crediting existed) get a batch equal to
+ * confirmed received − sold, so the cashier can sell the remaining balance.
+ * Only products with no pharmacy batch at all are touched, so this is idempotent.
+ */
+async function backfillConfirmedPharmacyStock(pharmacyId: string) {
+  const confirmedItems = await prisma.orderItem.findMany({
+    where: { order: { pharmacyId, status: "CONFIRMED" } },
+    select: {
+      productId: true,
+      quantity: true,
+      unitType: true,
+      product: {
+        select: {
+          unitType: true,
+          unitsPerBox: true,
+          costPrice: true,
+          manufacturer: true,
+          country: true,
+        },
+      },
+    },
+  });
+  if (confirmedItems.length === 0) return;
+
+  const productIds = Array.from(new Set(confirmedItems.map((i) => i.productId)));
+  const existing = await prisma.stockBatch.findMany({
+    where: { pharmacyId, productId: { in: productIds } },
+    select: { productId: true },
+    distinct: ["productId"],
+  });
+  const hasBatch = new Set(existing.map((b) => b.productId));
+  const missing = productIds.filter((id) => !hasBatch.has(id));
+  if (missing.length === 0) return;
+
+  const sold = await prisma.saleItem.groupBy({
+    by: ["productId"],
+    where: { productId: { in: missing }, sale: { pharmacyId } },
+    _sum: { quantity: true },
+  });
+  const soldMap = new Map(sold.map((s) => [s.productId, s._sum.quantity ?? 0]));
+
+  for (const productId of missing) {
+    const items = confirmedItems.filter((i) => i.productId === productId);
+    const product = items[0]?.product;
+    if (!product) continue;
+    const received = items.reduce(
+      (sum, i) =>
+        sum + toStockUnits(i.quantity, i.unitType, product.unitType, product.unitsPerBox),
+      0
+    );
+    const remaining = received - (soldMap.get(productId) ?? 0);
+    if (remaining <= 0) continue;
+
+    await prisma.stockBatch.create({
+      data: {
+        productId,
+        batchNumber: `RCV-${Date.now().toString(36).toUpperCase()}`,
+        quantity: remaining,
+        costPrice: product.costPrice,
+        expiryDate: new Date(Date.now() + 365 * 86400000),
+        pharmacyId,
+        warehouseId: null,
+        manufacturer: product.manufacturer,
+        country: product.country,
+      },
+    });
+  }
+}
+
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const q = searchParams.get("q")?.trim() ?? "";
   const category = searchParams.get("category");
   const location = searchParams.get("location"); // pharmacy | warehouse | all
-  const pharmacyId = searchParams.get("pharmacyId");
+  let pharmacyId = searchParams.get("pharmacyId");
 
   try {
+    if (location === "pharmacy") {
+      pharmacyId = await resolvePharmacyId(pharmacyId);
+      if (pharmacyId) {
+        try {
+          await backfillConfirmedPharmacyStock(pharmacyId);
+        } catch (err) {
+          console.error("[GET /api/products] backfill failed", err);
+        }
+      }
+    }
+
     const products = await prisma.product.findMany({
       where: {
         ...(q
