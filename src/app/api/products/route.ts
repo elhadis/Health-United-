@@ -188,7 +188,47 @@ export async function DELETE(request: Request) {
 
   try {
     const { searchParams } = new URL(request.url);
+    const batchId = searchParams.get("batchId")?.trim();
     const id = searchParams.get("id")?.trim();
+
+    if (batchId) {
+      const batch = await prisma.stockBatch.findUnique({
+        where: { id: batchId },
+        select: { id: true, productId: true },
+      });
+      if (!batch) {
+        return NextResponse.json({ error: "الدفعة غير موجودة" }, { status: 404 });
+      }
+
+      const productDeleted = await prisma.$transaction(async (tx) => {
+        // Keep sales history intact while removing the batch itself.
+        await tx.saleItem.updateMany({
+          where: { batchId },
+          data: { batchId: null },
+        });
+        await tx.stockBatch.delete({ where: { id: batchId } });
+
+        const [inStock, saleCount, orderCount] = await Promise.all([
+          tx.stockBatch.count({
+            where: { productId: batch.productId, quantity: { gt: 0 } },
+          }),
+          tx.saleItem.count({ where: { productId: batch.productId } }),
+          tx.orderItem.count({ where: { productId: batch.productId } }),
+        ]);
+        if (inStock === 0 && saleCount === 0 && orderCount === 0) {
+          await tx.product.delete({ where: { id: batch.productId } });
+          return true;
+        }
+        return false;
+      });
+
+      return NextResponse.json({
+        ok: true,
+        deletedBatchId: batchId,
+        productDeleted,
+      });
+    }
+
     if (!id) {
       return NextResponse.json({ error: "معرف المنتج مطلوب" }, { status: 400 });
     }

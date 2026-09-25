@@ -30,6 +30,7 @@ import { formatCurrency, formatDate, daysUntilExpiry, isExpired, isNearExpiry } 
 
 type BatchRow = {
   id: string;
+  batchId?: string;
   productId: string;
   productName: string;
   category: "HUMAN" | "VETERINARY";
@@ -141,6 +142,7 @@ async function fetchWarehouse(): Promise<BatchRow[]> {
         batches.push({
           ...base,
           id: b.id ?? `${productId}-batch-${bIdx}`,
+          batchId: b.id ?? undefined,
           batchNumber: b.batchNumber ?? "-",
           quantity: toNumber(b.quantity),
           costPrice: toNumber(b.costPrice ?? p.costPrice),
@@ -172,6 +174,8 @@ export default function WarehousePage() {
   const [category, setCategory] = useState<"ALL" | "HUMAN" | "VETERINARY">("ALL");
   const [open, setOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<{
+    rowId: string;
+    batchId?: string;
     productId: string;
     productName: string;
   } | null>(null);
@@ -229,19 +233,31 @@ export default function WarehousePage() {
 
   const confirmDeleteProduct = async () => {
     if (!deleteTarget) return;
-    const res = await fetch(
-      `/api/products?id=${encodeURIComponent(deleteTarget.productId)}`,
-      { method: "DELETE" }
-    );
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      setMsg(data.error || "فشل حذف المنتج");
+    const target = deleteTarget;
+    const url = target.batchId
+      ? `/api/products?batchId=${encodeURIComponent(target.batchId)}`
+      : `/api/products?id=${encodeURIComponent(target.productId)}`;
+    let data: { error?: string } = {};
+    try {
+      const res = await fetch(url, { method: "DELETE" });
+      data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setMsg(data?.error || "فشل حذف المنتج");
+        return;
+      }
+    } catch {
+      setMsg("تعذر الاتصال بالخادم");
       return;
     }
-    setMsg(`تم حذف المنتج: ${deleteTarget.productName}`);
+    queryClient.setQueryData<BatchRow[]>(["warehouse"], (prev) =>
+      (prev ?? []).filter((row) =>
+        target.batchId ? row.id !== target.rowId : row.productId !== target.productId
+      )
+    );
+    setMsg(`تم حذف المنتج: ${target.productName}`);
     setDeleteTarget(null);
     void queryClient.invalidateQueries({ queryKey: ["warehouse"] });
-    void refetch();
+    void queryClient.invalidateQueries({ queryKey: ["products"] });
   };
 
   const submitProduct = async () => {
@@ -530,6 +546,8 @@ export default function WarehousePage() {
                             size="sm"
                             onClick={() =>
                               setDeleteTarget({
+                                rowId: b.id,
+                                batchId: b.batchId,
                                 productId: b.productId,
                                 productName: b.productName,
                               })
