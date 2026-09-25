@@ -83,13 +83,6 @@ function formatDateTime(value: string) {
   });
 }
 
-function statusLabelEn(status: TransferOrderRow["status"]) {
-  if (status === "APPROVED") return "Approved";
-  if (status === "DISPATCHED") return "Dispatched";
-  if (status === "CONFIRMED") return "Confirmed";
-  return status;
-}
-
 function startOfDay(d: Date) {
   const x = new Date(d);
   x.setHours(0, 0, 0, 0);
@@ -247,55 +240,86 @@ export function TransferAnalyticsTab({
     return Array.from(map.values());
   }, [approvedOrders]);
 
-  const buildPayload = (): TransferPdfPayload => ({
-    title: "Transfers & Dispatches Report",
-    reference: `TRF-${Date.now().toString(36).toUpperCase()}`,
-    date: new Date().toLocaleDateString("en-GB"),
-    partyLabel: "Company",
-    partyName: COMPANY_NAME_AR,
-    meta: [
-      { label: "Period", value: filter === "custom" ? "Custom range" : filter },
-      {
-        label: "Category",
-        value: category === "ALL" ? "All" : category === "HUMAN" ? "Human" : "Veterinary",
-      },
-      {
-        label: "From",
-        value: bounds.from.toLocaleDateString("en-GB"),
-      },
-      {
-        label: "To",
-        value: bounds.to.toLocaleDateString("en-GB"),
-      },
-    ],
-    summaryLines: [
-      `Approved orders: ${approvedOrders.length}`,
-      `Dispatched quantities: ${dispatchedQty}`,
-      `Cashier / Pharmacy transfers: ${pharmacyTransfers.length}`,
-    ],
-    items:
-      detailRows.length > 0
-        ? detailRows.map((row) => ({
-            name: row.productName,
-            quantity: row.quantity,
-            unitType: row.unitType,
-            batch: row.batch === "-" ? "-" : row.batch.replace(/،\s*/g, ", "),
-            category:
-              row.category === "HUMAN" ? "Human" : row.category === "VETERINARY" ? "Vet" : "-",
-            date: new Date(row.date).toLocaleString("en-GB", {
-              day: "2-digit",
-              month: "2-digit",
-              year: "2-digit",
-              hour: "2-digit",
-              minute: "2-digit",
-            }),
-            status: statusLabelEn(row.status),
-          }))
-        : lineItems.length > 0
-          ? lineItems
-          : [{ name: "No approved transfers in period", quantity: 0, unitType: "-" }],
-    notes: `Generated for warehouse transfer analytics — ${COMPANY_NAME_AR}`,
-  });
+  const buildPayload = (): TransferPdfPayload => {
+    const humanCount = detailRows.filter((r) => r.category === "HUMAN").length;
+    const vetCount = detailRows.filter((r) => r.category === "VETERINARY").length;
+    const periodEn =
+      filter === "today"
+        ? "Today"
+        : filter === "week"
+          ? "This week"
+          : filter === "month"
+            ? "This month"
+            : "Custom range";
+    return {
+      title: "Transfers & Dispatches Report",
+      titleAr: "تقرير التحويلات والطلبات الصادرة",
+      reference: `TRF-${Date.now().toString(36).toUpperCase()}`,
+      date: new Date().toLocaleString("en-GB", {
+        day: "2-digit",
+        month: "2-digit",
+        year: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+      }),
+      partyLabel: "Company / الشركة",
+      partyName: COMPANY_NAME_AR,
+      meta: [
+        { label: "Period / الفترة", value: `${periodEn} · ${filterLabel(filter)}` },
+        {
+          label: "Range / النطاق",
+          value: `${bounds.from.toLocaleDateString("en-GB")} - ${bounds.to.toLocaleDateString("en-GB")}`,
+        },
+        {
+          label: "Category / التصنيف",
+          value:
+            category === "ALL"
+              ? "All · الكل"
+              : category === "HUMAN"
+                ? "Human · بشري"
+                : "Veterinary · بيطري",
+        },
+      ],
+      summaryCards: [
+        {
+          labelEn: "Total Approved Orders",
+          labelAr: "الطلبات المعتمدة",
+          value: String(approvedOrders.length),
+        },
+        {
+          labelEn: "Dispatched Quantities",
+          labelAr: "الكميات المرسلة",
+          value: String(dispatchedQty),
+        },
+        {
+          labelEn: "Human / Veterinary",
+          labelAr: "بشري / بيطري",
+          value: `${humanCount} / ${vetCount}`,
+        },
+      ],
+      items:
+        detailRows.length > 0
+          ? detailRows.map((row) => ({
+              name: row.productName,
+              quantity: row.quantity,
+              unitType: row.unitType,
+              batch: row.batch === "-" ? "-" : row.batch.replace(/،\s*/g, ", "),
+              category: categoryLabel(row.category),
+              date: new Date(row.date).toLocaleString("en-GB", {
+                day: "2-digit",
+                month: "2-digit",
+                year: "numeric",
+                hour: "2-digit",
+                minute: "2-digit",
+              }),
+              status: statusLabel(row.status),
+            }))
+          : lineItems.length > 0
+            ? lineItems
+            : [{ name: "لا توجد تحويلات في هذه الفترة", quantity: 0, unitType: "-" }],
+      notes: `Generated for warehouse transfer analytics — ${COMPANY_NAME_AR}`,
+    };
+  };
 
   const shareText = () =>
     [

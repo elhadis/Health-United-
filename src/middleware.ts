@@ -21,6 +21,7 @@ function isPublic(pathname: string): boolean {
     return true;
   }
   if (pathname.startsWith("/icons/")) return true;
+  if (pathname.startsWith("/fonts/")) return true;
   if (pathname.startsWith("/api/auth/login")) return true;
   if (pathname.startsWith("/api/auth/logout")) return true;
   if (pathname.startsWith("/api/auth/me")) return true;
