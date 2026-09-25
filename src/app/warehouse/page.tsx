@@ -11,6 +11,7 @@ import {
   Search,
   Plus,
   Trash2,
+  Pencil,
 } from "lucide-react";
 import { AppShell } from "@/components/layout/app-shell";
 import { Button } from "@/components/ui/button";
@@ -170,6 +171,11 @@ export default function WarehousePage() {
   const queryClient = useQueryClient();
   const user = useAuthStore((s) => s.user);
   const allowDelete = canDeleteRecords(user?.role);
+  const allowEdit = user?.role === "ADMIN" || user?.role === "ADMINISTRATOR";
+  const showActions = allowEdit || allowDelete;
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editQty, setEditQty] = useState("");
+  const [savingEdit, setSavingEdit] = useState(false);
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState<"ALL" | "HUMAN" | "VETERINARY">("ALL");
   const [open, setOpen] = useState(false);
@@ -258,6 +264,50 @@ export default function WarehousePage() {
     setDeleteTarget(null);
     void queryClient.invalidateQueries({ queryKey: ["warehouse"] });
     void queryClient.invalidateQueries({ queryKey: ["products"] });
+  };
+
+  const startEdit = (row: BatchRow) => {
+    setEditingId(row.id);
+    setEditQty(String(row.quantity ?? 0));
+  };
+
+  const cancelEdit = () => {
+    setEditingId(null);
+    setEditQty("");
+  };
+
+  const saveQuantity = async (row: BatchRow) => {
+    if (!row.batchId || savingEdit) return;
+    const quantity = Number(editQty);
+    if (!Number.isInteger(quantity) || quantity < 0) {
+      setMsg("الكمية يجب أن تكون رقماً صحيحاً غير سالب");
+      return;
+    }
+    setSavingEdit(true);
+    try {
+      const res = await fetch("/api/products", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ batchId: row.batchId, quantity }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setMsg(data?.error || "فشل تعديل الكمية");
+        return;
+      }
+      const newQty = toNumber(data?.batch?.quantity ?? quantity);
+      queryClient.setQueryData<BatchRow[]>(["warehouse"], (prev) =>
+        (prev ?? []).map((r) => (r.id === row.id ? { ...r, quantity: newQty } : r))
+      );
+      setMsg(`تم تعديل كمية ${row.productName} إلى ${newQty}`);
+      cancelEdit();
+      void queryClient.invalidateQueries({ queryKey: ["warehouse"] });
+      void queryClient.invalidateQueries({ queryKey: ["products"] });
+    } catch {
+      setMsg("تعذر الاتصال بالخادم");
+    } finally {
+      setSavingEdit(false);
+    }
   };
 
   const submitProduct = async () => {
@@ -471,7 +521,7 @@ export default function WarehousePage() {
                   <th className="px-4 py-3 text-right font-medium">التكلفة</th>
                   <th className="px-4 py-3 text-right font-medium">الصلاحية</th>
                   <th className="px-4 py-3 text-right font-medium">الموقع</th>
-                  {allowDelete && (
+                  {showActions && (
                     <th className="px-4 py-3 text-right font-medium">إجراء</th>
                   )}
                 </tr>
@@ -512,14 +562,35 @@ export default function WarehousePage() {
                       </td>
                       <td className="px-4 py-3 font-mono text-xs">{b.batchNumber}</td>
                       <td className="px-4 py-3">
-                        <span
-                          className={
-                            b.quantity <= 10 ? "font-bold text-danger" : "font-semibold"
-                          }
-                        >
-                          {b.quantity}
-                        </span>{" "}
-                        <span className="text-xs text-slate-400">{b.unitType}</span>
+                        {editingId === b.id ? (
+                          <div className="flex items-center gap-2">
+                            <Input
+                              type="number"
+                              min={0}
+                              step={1}
+                              className="h-8 w-24"
+                              value={editQty}
+                              autoFocus
+                              onChange={(e) => setEditQty(e.target.value)}
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter") void saveQuantity(b);
+                                if (e.key === "Escape") cancelEdit();
+                              }}
+                            />
+                            <span className="text-xs text-slate-400">{b.unitType}</span>
+                          </div>
+                        ) : (
+                          <>
+                            <span
+                              className={
+                                b.quantity <= 10 ? "font-bold text-danger" : "font-semibold"
+                              }
+                            >
+                              {b.quantity}
+                            </span>{" "}
+                            <span className="text-xs text-slate-400">{b.unitType}</span>
+                          </>
+                        )}
                       </td>
                       <td className="px-4 py-3">{formatCurrency(b.costPrice)}</td>
                       <td className="px-4 py-3">
@@ -538,24 +609,61 @@ export default function WarehousePage() {
                           {b.location === "WAREHOUSE" ? "مستودع" : "صيدلية"}
                         </Badge>
                       </td>
-                      {allowDelete && (
+                      {showActions && (
                         <td className="px-4 py-3">
-                          <Button
-                            type="button"
-                            variant="danger"
-                            size="sm"
-                            onClick={() =>
-                              setDeleteTarget({
-                                rowId: b.id,
-                                batchId: b.batchId,
-                                productId: b.productId,
-                                productName: b.productName,
-                              })
-                            }
-                          >
-                            <Trash2 className="h-3.5 w-3.5" />
-                            حذف
-                          </Button>
+                          <div className="flex flex-wrap items-center gap-2">
+                            {allowEdit && b.batchId && (
+                              editingId === b.id ? (
+                                <>
+                                  <Button
+                                    type="button"
+                                    size="sm"
+                                    disabled={savingEdit}
+                                    onClick={() => void saveQuantity(b)}
+                                  >
+                                    {savingEdit ? "جاري الحفظ..." : "حفظ"}
+                                  </Button>
+                                  <Button
+                                    type="button"
+                                    variant="outline"
+                                    size="sm"
+                                    disabled={savingEdit}
+                                    onClick={cancelEdit}
+                                  >
+                                    إلغاء
+                                  </Button>
+                                </>
+                              ) : (
+                                <Button
+                                  type="button"
+                                  variant="outline"
+                                  size="sm"
+                                  onClick={() => startEdit(b)}
+                                >
+                                  <Pencil className="h-3.5 w-3.5" />
+                                  تعديل
+                                </Button>
+                              )
+                            )}
+                            {allowDelete && (
+                              <Button
+                                type="button"
+                                variant="danger"
+                                size="sm"
+                                onClick={() =>
+                                  setDeleteTarget({
+                                    rowId: b.id,
+                                    batchId: b.batchId,
+                                    productId: b.productId,
+                                    productName: b.productName,
+                                  })
+                                }
+                              >
+                                <Trash2 className="h-3.5 w-3.5" />
+                                حذف
+                              </Button>
+                            )}
+                          </div>
                         </td>
                       )}
                     </motion.tr>

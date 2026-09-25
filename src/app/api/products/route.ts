@@ -251,6 +251,83 @@ export async function POST(request: Request) {
     try {
       const warehouseId = await resolveDefaultWarehouseId(body.warehouseId);
 
+      const name = typeof body.name === "string" ? body.name.trim() : "";
+      const existingProduct = name
+        ? await prisma.product.findFirst({
+            where: {
+              name: { equals: name, mode: "insensitive" },
+              ...(body.category ? { category: body.category } : {}),
+            },
+            orderBy: { createdAt: "asc" },
+          })
+        : null;
+
+      if (existingProduct) {
+        const batchInput = body.batch;
+        const addQty = Math.floor(Number(batchInput?.quantity) || 0);
+        const expiry = batchInput?.expiryDate ? new Date(batchInput.expiryDate) : null;
+
+        if (!batchInput || addQty <= 0 || !expiry || Number.isNaN(expiry.getTime())) {
+          return NextResponse.json(
+            { error: "المنتج موجود مسبقاً — أدخل كمية وتاريخ صلاحية صالحين لإضافة المخزون" },
+            { status: 400 }
+          );
+        }
+
+        const dayStart = new Date(expiry);
+        dayStart.setUTCHours(0, 0, 0, 0);
+        const dayEnd = new Date(dayStart.getTime() + 86400000);
+        const batchNumber = String(batchInput.batchNumber ?? "").trim();
+
+        const result = await prisma.$transaction(async (tx) => {
+          const match = await tx.stockBatch.findFirst({
+            where: {
+              productId: existingProduct.id,
+              batchNumber,
+              expiryDate: { gte: dayStart, lt: dayEnd },
+              pharmacyId: null,
+            },
+            orderBy: { createdAt: "asc" },
+          });
+
+          if (match) {
+            const updated = await tx.stockBatch.update({
+              where: { id: match.id },
+              data: { quantity: { increment: addQty } },
+            });
+            return { batch: updated, accumulated: true };
+          }
+
+          const created = await tx.stockBatch.create({
+            data: {
+              productId: existingProduct.id,
+              batchNumber,
+              quantity: addQty,
+              costPrice: batchInput.costPrice ?? body.costPrice ?? existingProduct.costPrice,
+              expiryDate: expiry,
+              warehouseId,
+              pharmacyId: null,
+              manufacturer: body.manufacturer || existingProduct.manufacturer,
+              country: body.country || existingProduct.country,
+            },
+          });
+          return { batch: created, accumulated: false };
+        });
+
+        return NextResponse.json(
+          {
+            mode: "database",
+            product: existingProduct,
+            batch: result.batch,
+            accumulated: result.accumulated,
+            message: result.accumulated
+              ? `تمت إضافة ${addQty} إلى الدفعة الموجودة — الكمية الحالية: ${result.batch.quantity}`
+              : "المنتج موجود مسبقاً — تمت إضافة دفعة جديدة له",
+          },
+          { status: 200 }
+        );
+      }
+
       const product = await prisma.product.create({
         data: {
           name: body.name,
@@ -294,6 +371,50 @@ export async function POST(request: Request) {
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : "فشل إنشاء المنتج";
+    return NextResponse.json({ error: message }, { status: 500 });
+  }
+}
+
+export async function PATCH(request: Request) {
+  const session = await getSessionUser();
+  if (!session || (session.role !== "ADMIN" && session.role !== "ADMINISTRATOR")) {
+    return NextResponse.json(
+      { error: "غير مصرح — تعديل الكمية متاح لمدير المستودع فقط" },
+      { status: 403 }
+    );
+  }
+
+  try {
+    const body = await request.json().catch(() => ({}));
+    const batchId = typeof body?.batchId === "string" ? body.batchId.trim() : "";
+    const quantity = Number(body?.quantity);
+
+    if (!batchId) {
+      return NextResponse.json({ error: "معرف الدفعة مطلوب" }, { status: 400 });
+    }
+    if (!Number.isInteger(quantity) || quantity < 0) {
+      return NextResponse.json(
+        { error: "الكمية يجب أن تكون رقماً صحيحاً غير سالب" },
+        { status: 400 }
+      );
+    }
+
+    const exists = await prisma.stockBatch.findUnique({
+      where: { id: batchId },
+      select: { id: true },
+    });
+    if (!exists) {
+      return NextResponse.json({ error: "الدفعة غير موجودة" }, { status: 404 });
+    }
+
+    const batch = await prisma.stockBatch.update({
+      where: { id: batchId },
+      data: { quantity },
+      select: { id: true, quantity: true },
+    });
+    return NextResponse.json({ ok: true, batch });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "فشل تعديل الكمية";
     return NextResponse.json({ error: message }, { status: 500 });
   }
 }
