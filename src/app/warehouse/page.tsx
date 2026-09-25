@@ -43,44 +43,115 @@ type BatchRow = {
   unitType: string;
 };
 
-async function fetchWarehouse() {
+type RawBatch = {
+  id?: string;
+  batchNumber?: string | null;
+  quantity?: number | string | null;
+  costPrice?: number | string | null;
+  expiryDate?: string | null;
+  warehouseId?: string | null;
+};
+
+type RawProduct = {
+  id?: string;
+  name?: string | null;
+  category?: string | null;
+  unitType?: string | null;
+  manufacturer?: string | null;
+  country?: string | null;
+  costPrice?: number | string | null;
+  availableQty?: number | string | null;
+  batchId?: string | null;
+  batchNumber?: string | null;
+  expiryDate?: string | null;
+  batches?: RawBatch[] | null;
+};
+
+type RawDemoBatch = Partial<BatchRow> & {
+  quantity?: number | string | null;
+  costPrice?: number | string | null;
+};
+
+function toNumber(value: unknown): number {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : 0;
+}
+
+function hasValidDate(value: string | null | undefined): value is string {
+  return !!value && !Number.isNaN(new Date(value).getTime());
+}
+
+function toCategory(value: unknown): BatchRow["category"] {
+  return value === "VETERINARY" ? "VETERINARY" : "HUMAN";
+}
+
+function normalizeDemoBatch(b: RawDemoBatch, idx: number): BatchRow {
+  return {
+    id: b.id ?? `batch-${idx}`,
+    productId: b.productId ?? b.id ?? `product-${idx}`,
+    productName: b.productName ?? "منتج",
+    category: toCategory(b.category),
+    batchNumber: b.batchNumber ?? "-",
+    quantity: toNumber(b.quantity),
+    costPrice: toNumber(b.costPrice),
+    expiryDate: b.expiryDate ?? "",
+    location: b.location === "PHARMACY" ? "PHARMACY" : "WAREHOUSE",
+    manufacturer: b.manufacturer ?? "",
+    country: b.country ?? "",
+    unitType: b.unitType ?? "",
+  };
+}
+
+async function fetchWarehouse(): Promise<BatchRow[]> {
   const res = await fetch("/api/products?location=all");
-  const data = await res.json();
-  if (data.batches) return data.batches as BatchRow[];
-  const products = data.products ?? [];
+  const data = await res.json().catch(() => null);
+  if (!res.ok) {
+    throw new Error(data?.error || "فشل تحميل بيانات المستودع");
+  }
+
+  if (Array.isArray(data?.batches)) {
+    return (data.batches as RawDemoBatch[]).map(normalizeDemoBatch);
+  }
+
+  const products: RawProduct[] = Array.isArray(data?.products) ? data.products : [];
   const batches: BatchRow[] = [];
-  for (const p of products) {
-    if (p.batches?.length) {
-      for (const b of p.batches) {
+
+  for (const [idx, p] of products.entries()) {
+    if (!p) continue;
+    const productId = p.id ?? `product-${idx}`;
+    const base = {
+      productId,
+      productName: p.name ?? "منتج",
+      category: toCategory(p.category),
+      manufacturer: p.manufacturer ?? "",
+      country: p.country ?? "",
+      unitType: p.unitType ?? "",
+    };
+
+    const productBatches = Array.isArray(p.batches) ? p.batches : [];
+    if (productBatches.length > 0) {
+      for (const [bIdx, b] of productBatches.entries()) {
+        if (!b) continue;
         batches.push({
-          id: b.id,
-          productId: p.id,
-          productName: p.name,
-          category: p.category,
-          batchNumber: b.batchNumber,
-          quantity: b.quantity,
-          costPrice: b.costPrice,
-          expiryDate: b.expiryDate,
+          ...base,
+          id: b.id ?? `${productId}-batch-${bIdx}`,
+          batchNumber: b.batchNumber ?? "-",
+          quantity: toNumber(b.quantity),
+          costPrice: toNumber(b.costPrice ?? p.costPrice),
+          expiryDate: b.expiryDate ?? "",
           location: b.warehouseId ? "WAREHOUSE" : "PHARMACY",
-          manufacturer: p.manufacturer ?? "",
-          country: p.country ?? "",
-          unitType: p.unitType,
         });
       }
     } else {
+      // Products whose stock is fully sold/transferred have no in-stock batches
       batches.push({
-        id: p.batchId ?? p.id,
-        productId: p.id,
-        productName: p.name,
-        category: p.category,
+        ...base,
+        id: p.batchId ?? productId,
         batchNumber: p.batchNumber ?? "-",
-        quantity: p.availableQty,
-        costPrice: p.costPrice,
-        expiryDate: p.expiryDate,
+        quantity: toNumber(p.availableQty),
+        costPrice: toNumber(p.costPrice),
+        expiryDate: p.expiryDate ?? "",
         location: "WAREHOUSE",
-        manufacturer: p.manufacturer ?? "",
-        country: p.country ?? "",
-        unitType: p.unitType,
       });
     }
   }
@@ -112,28 +183,40 @@ export default function WarehousePage() {
   });
   const [msg, setMsg] = useState<string | null>(null);
 
-  const { data: batches = [], refetch, isLoading } = useQuery({
+  const {
+    data: batchData,
+    refetch,
+    isLoading,
+    isError,
+    error,
+  } = useQuery({
     queryKey: ["warehouse"],
     queryFn: fetchWarehouse,
   });
+  const batches = useMemo(
+    () => (Array.isArray(batchData) ? batchData : []),
+    [batchData]
+  );
 
   const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
     return batches.filter((b) => {
-      const matchCat = category === "ALL" || b.category === category;
-      const q = query.trim().toLowerCase();
+      const matchCat = category === "ALL" || b?.category === category;
       const matchQ =
         !q ||
-        b.productName.toLowerCase().includes(q) ||
-        b.batchNumber.toLowerCase().includes(q) ||
-        b.manufacturer.toLowerCase().includes(q);
+        (b?.productName ?? "").toLowerCase().includes(q) ||
+        (b?.batchNumber ?? "").toLowerCase().includes(q) ||
+        (b?.manufacturer ?? "").toLowerCase().includes(q);
       return matchCat && matchQ;
     });
   }, [batches, category, query]);
 
   const alerts = useMemo(() => {
-    const low = filtered.filter((b) => b.quantity <= 10);
+    const low = filtered.filter((b) => (b?.quantity ?? 0) <= 10);
     const expiry = filtered.filter(
-      (b) => isExpired(b.expiryDate) || isNearExpiry(b.expiryDate)
+      (b) =>
+        hasValidDate(b?.expiryDate) &&
+        (isExpired(b.expiryDate) || isNearExpiry(b.expiryDate))
     );
     return { low, expiry };
   }, [filtered]);
@@ -175,8 +258,8 @@ export default function WarehousePage() {
         },
       }),
     });
-    const data = await res.json();
-    setMsg(data.message ?? "تمت إضافة الصنف");
+    const data = await res.json().catch(() => ({}));
+    setMsg(data?.message ?? data?.error ?? "تمت إضافة الصنف");
     setOpen(false);
     void refetch();
   };
@@ -351,6 +434,10 @@ export default function WarehousePage() {
         <CardContent className="table-scroll overflow-x-auto p-0">
           {isLoading ? (
             <p className="p-6 text-sm text-slate-500">جاري التحميل...</p>
+          ) : isError ? (
+            <p className="p-6 text-sm text-red-700">
+              {error instanceof Error ? error.message : "فشل تحميل بيانات المستودع"}
+            </p>
           ) : (
             <table className="w-full min-w-[720px] text-sm">
               <thead className="bg-slate-50 text-slate-500">
@@ -369,9 +456,10 @@ export default function WarehousePage() {
               </thead>
               <tbody>
                 {filtered.map((b, idx) => {
-                  const days = daysUntilExpiry(b.expiryDate);
-                  const expired = isExpired(b.expiryDate);
-                  const near = isNearExpiry(b.expiryDate);
+                  const validExpiry = hasValidDate(b.expiryDate);
+                  const days = validExpiry ? daysUntilExpiry(b.expiryDate) : 0;
+                  const expired = validExpiry && isExpired(b.expiryDate);
+                  const near = validExpiry && isNearExpiry(b.expiryDate);
                   return (
                     <motion.tr
                       key={b.id}
@@ -414,7 +502,7 @@ export default function WarehousePage() {
                       <td className="px-4 py-3">{formatCurrency(b.costPrice)}</td>
                       <td className="px-4 py-3">
                         <div className="flex flex-col gap-1">
-                          <span>{formatDate(b.expiryDate)}</span>
+                          <span>{validExpiry ? formatDate(b.expiryDate) : "-"}</span>
                           {(expired || near) && (
                             <Badge variant={expired ? "danger" : "warning"}>
                               <AlertTriangle className="h-3 w-3" />
