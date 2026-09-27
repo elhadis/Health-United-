@@ -113,6 +113,8 @@ export async function GET(request: Request) {
           lowStockThreshold: b.product.lowStockThreshold,
           expiryDate: b.expiryDate.toISOString(),
           category: b.product.category,
+          costPrice: Number(b.costPrice),
+          unitPrice: Number(b.product.defaultPrice),
         })),
         nearExpiry: nearExpiryBatches.map((b) => ({
           id: b.productId,
@@ -122,6 +124,8 @@ export async function GET(request: Request) {
           availableQty: b.quantity,
           expiryDate: b.expiryDate.toISOString(),
           category: b.product.category,
+          costPrice: Number(b.costPrice),
+          unitPrice: Number(b.product.defaultPrice),
         })),
       },
     });
