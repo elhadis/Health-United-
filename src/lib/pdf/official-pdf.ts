@@ -538,6 +538,97 @@ export async function buildTransferPdf(payload: TransferPdfPayload): Promise<jsP
   return doc;
 }
 
+// ---------------------------------------------------------------------------
+// Generic multi-section tabular reports
+// ---------------------------------------------------------------------------
+export type ReportSection = {
+  heading?: string;
+  headingAr?: string;
+  /** width is a fraction of the printable width; fractions should sum to 1 */
+  columns: Array<{ en: string; ar: string; width: number; align?: "left" | "right" | "center" }>;
+  rows: string[][];
+  emptyText?: string;
+};
+
+export type TabularReportPayload = {
+  title: string;
+  titleAr?: string;
+  reference: string;
+  date: string;
+  meta?: Array<{ label: string; value: string }>;
+  summaryCards?: PdfSummaryCard[];
+  sections: ReportSection[];
+  notes?: string;
+};
+
+export async function buildTabularReportPdf(payload: TabularReportPayload): Promise<jsPDF> {
+  const ctx = await createDoc();
+  const { doc, pageWidth } = ctx;
+  const width = pageWidth - MARGIN * 2;
+
+  let y = drawHeader(ctx, payload.title, payload.titleAr);
+  y = drawInfoGrid(
+    ctx,
+    [
+      { label: "Reference / المرجع", value: payload.reference },
+      { label: "Generated / تاريخ الإنشاء", value: payload.date },
+      ...(payload.meta ?? []),
+    ],
+    y
+  );
+  if (payload.summaryCards?.length) {
+    y = drawSummaryCards(ctx, payload.summaryCards, y);
+  }
+
+  for (const section of payload.sections) {
+    if (section.heading || section.headingAr) {
+      y = ensureSpace(ctx, y, 30);
+      if (section.heading) {
+        setFont(ctx, "bold", 11, NAVY);
+        doc.text(safe(ctx, section.heading), MARGIN, y);
+      }
+      if (section.headingAr) {
+        setFont(ctx, "bold", 11, TEAL);
+        doc.text(safe(ctx, section.headingAr), pageWidth - MARGIN, y, { align: "right" });
+      }
+      y += 4;
+    }
+    const rows =
+      section.rows.length > 0
+        ? section.rows
+        : [[section.emptyText ?? "—", ...section.columns.slice(1).map(() => "")]];
+    y = drawTable<string[]>(
+      ctx,
+      section.columns.map((col, i) => ({
+        en: col.en,
+        ar: col.ar,
+        width: width * col.width,
+        align: col.align,
+        value: (row) => row[i] ?? "",
+      })),
+      rows,
+      y
+    );
+    y += 2;
+  }
+
+  y = drawNotes(ctx, payload.notes, y);
+  drawSeal(ctx, y + 2);
+  drawFooters(ctx);
+  return doc;
+}
+
+export async function downloadTabularReportPdf(payload: TabularReportPayload, filename: string) {
+  const doc = await buildTabularReportPdf(payload);
+  doc.save(filename);
+  return doc;
+}
+
+export async function getTabularReportPdfBlob(payload: TabularReportPayload): Promise<Blob> {
+  const doc = await buildTabularReportPdf(payload);
+  return doc.output("blob");
+}
+
 export async function downloadTransferPdf(payload: TransferPdfPayload, filename: string) {
   const doc = await buildTransferPdf(payload);
   doc.save(filename);

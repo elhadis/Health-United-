@@ -120,7 +120,8 @@ export function canAccessPath(role: Role, pathname: string): boolean {
 
   if (
     pathname.startsWith("/api/payments") ||
-    pathname.startsWith("/api/suppliers")
+    pathname.startsWith("/api/suppliers") ||
+    pathname.startsWith("/api/supplier-invoices")
   ) {
     return role === "ADMINISTRATOR";
   }

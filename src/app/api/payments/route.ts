@@ -74,6 +74,39 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "طريقة الدفع غير صالحة" }, { status: 400 });
     }
 
+    const invoiceId = body.invoiceId ? String(body.invoiceId) : null;
+    let invoiceSupplierId: string | null = null;
+    if (invoiceId) {
+      const invoice = await prisma.supplierInvoice.findUnique({
+        where: { id: invoiceId },
+        include: { payments: { select: { amount: true } }, supplier: true },
+      });
+      if (!invoice) {
+        return NextResponse.json({ error: "فاتورة المورد غير موجودة" }, { status: 404 });
+      }
+      const paid = invoice.payments.reduce((s, p) => s + Number(p.amount), 0);
+      const remaining = Number(invoice.totalAmount) - paid;
+      if (amount > remaining + 0.001) {
+        return NextResponse.json(
+          {
+            error: `المبلغ يتجاوز المتبقي على الفاتورة (${remaining.toFixed(2)})`,
+          },
+          { status: 400 }
+        );
+      }
+      invoiceSupplierId = invoice.supplierId;
+      body.supplierName = body.supplierName || invoice.supplier.name;
+    }
+
+    let paidAt: Date | null = null;
+    if (body.paidAt) {
+      const raw = String(body.paidAt);
+      paidAt = new Date(/^\d{4}-\d{2}-\d{2}$/.test(raw) ? `${raw}T12:00:00.000Z` : raw);
+      if (Number.isNaN(paidAt.getTime())) {
+        return NextResponse.json({ error: "تاريخ الدفعة غير صالح" }, { status: 400 });
+      }
+    }
+
     const supplierName = String(body.supplierName || body.companyName || "").trim();
     if (!supplierName) {
       return NextResponse.json({ error: "اسم شركة المورد مطلوب" }, { status: 400 });
@@ -91,7 +124,7 @@ export async function POST(request: Request) {
     const notes = body.notes ? String(body.notes).trim() : null;
 
     const payment = await prisma.$transaction(async (tx) => {
-      let supplierId = body.supplierId ? String(body.supplierId) : null;
+      let supplierId = invoiceSupplierId ?? (body.supplierId ? String(body.supplierId) : null);
 
       if (!supplierId) {
         const existing = await tx.supplier.findFirst({
@@ -126,6 +159,8 @@ export async function POST(request: Request) {
           transactionRef,
           notes,
           supplierId,
+          invoiceId,
+          paidAt,
         },
         include: { supplier: true },
       });
