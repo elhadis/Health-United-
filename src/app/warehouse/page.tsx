@@ -121,7 +121,7 @@ function normalizeDemoBatch(b: RawDemoBatch, idx: number): BatchRow {
 
 async function fetchWarehouse(): Promise<BatchRow[]> {
   let res: Response;
-  let data: { error?: string; batches?: unknown; products?: unknown } | null;
+  let data: { error?: string; mode?: string; batches?: unknown; products?: unknown } | null;
   try {
     res = await fetch("/api/products?location=all&includeEmpty=1");
     data = await res.json().catch(() => null);
@@ -130,6 +130,10 @@ async function fetchWarehouse(): Promise<BatchRow[]> {
   }
   if (!res.ok) {
     throw new Error(data?.error || "فشل تحميل بيانات المستودع");
+  }
+  // Demo rows have fake ids and cannot be edited or deleted; treat as a transient DB outage.
+  if (data?.mode === "demo") {
+    throw new Error("تعذر الاتصال بقاعدة البيانات — جاري إعادة المحاولة...");
   }
 
   if (Array.isArray(data?.batches)) {
@@ -208,6 +212,7 @@ export default function WarehousePage() {
     unitType: "BOX",
   });
   const [savingEdit, setSavingEdit] = useState(false);
+  const [editError, setEditError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState<"ALL" | "HUMAN" | "VETERINARY">("ALL");
   const [open, setOpen] = useState(false);
@@ -240,6 +245,8 @@ export default function WarehousePage() {
   } = useQuery({
     queryKey: ["warehouse"],
     queryFn: fetchWarehouse,
+    retry: 3,
+    retryDelay: (attempt) => Math.min(1500 * (attempt + 1), 5000),
   });
   const batches = useMemo(
     () => (Array.isArray(batchData) ? batchData : []),
@@ -299,6 +306,7 @@ export default function WarehousePage() {
   };
 
   const startEdit = (row: BatchRow) => {
+    setEditError(null);
     setEditRow(row);
     setEditForm({
       quantity: String(row.quantity ?? 0),
@@ -314,32 +322,65 @@ export default function WarehousePage() {
   const saveEdit = async () => {
     const row = editRow;
     if (!row || savingEdit) return;
-    const quantity = Number(editForm.quantity);
-    if (!Number.isInteger(quantity) || quantity < 0) {
-      setMsg("الكمية يجب أن تكون رقماً صحيحاً غير سالب");
+    setEditError(null);
+
+    const qtyText = editForm.quantity.trim();
+    const quantity = Number.parseInt(qtyText, 10);
+    if (!/^\d+$/.test(qtyText) || !Number.isInteger(quantity)) {
+      setEditError("الكمية يجب أن تكون رقماً صحيحاً غير سالب");
       return;
     }
+    const parsePrice = (text: string) => {
+      if (text.trim() === "") return undefined;
+      const n = Number.parseFloat(text);
+      return Number.isFinite(n) && n >= 0 ? n : NaN;
+    };
+    const costPrice = parsePrice(editForm.costPrice);
+    const sellingPrice = parsePrice(editForm.defaultPrice);
+    if (Number.isNaN(costPrice)) {
+      setEditError("سعر التكلفة غير صالح");
+      return;
+    }
+    if (Number.isNaN(sellingPrice)) {
+      setEditError("سعر البيع غير صالح");
+      return;
+    }
+    let expiryDate: string | undefined;
+    if (editForm.expiryDate) {
+      const d = new Date(`${editForm.expiryDate}T00:00:00.000Z`);
+      if (Number.isNaN(d.getTime())) {
+        setEditError("تاريخ الصلاحية غير صالح");
+        return;
+      }
+      expiryDate = d.toISOString();
+    }
+
+    const payload = {
+      productId: row.productId,
+      quantity,
+      expiryDate,
+      batchNumber: editForm.batchNumber.trim() || undefined,
+      costPrice,
+      sellingPrice,
+      category: String(editForm.category),
+      unitType: String(editForm.unitType),
+    };
+
     setSavingEdit(true);
     try {
-      const res = await fetch("/api/products", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          batchId: row.batchId,
-          productId: row.productId,
-          quantity,
-          expiryDate: editForm.expiryDate || undefined,
-          batchNumber: editForm.batchNumber || undefined,
-          costPrice: editForm.costPrice === "" ? undefined : Number(editForm.costPrice),
-          defaultPrice:
-            editForm.defaultPrice === "" ? undefined : Number(editForm.defaultPrice),
-          category: editForm.category,
-          unitType: editForm.unitType,
-        }),
-      });
+      const res = await fetch(
+        row.batchId
+          ? `/api/batches/${encodeURIComponent(row.batchId)}`
+          : "/api/products",
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        }
+      );
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        setMsg(data?.error || "فشل حفظ التعديلات");
+        setEditError(data?.error || `فشل حفظ التعديلات (HTTP ${res.status})`);
         return;
       }
       const product = data?.product ?? {};
@@ -350,7 +391,7 @@ export default function WarehousePage() {
           const productFields = {
             category: toCategory(product.category ?? editForm.category),
             unitType: product.unitType ?? editForm.unitType,
-            defaultPrice: toNumber(product.defaultPrice ?? editForm.defaultPrice),
+            defaultPrice: toNumber(product.defaultPrice ?? sellingPrice ?? r.defaultPrice),
           };
           if (r.id !== row.id) return { ...r, ...productFields };
           return {
@@ -360,7 +401,7 @@ export default function WarehousePage() {
             batchId: batch.id ?? r.batchId,
             batchNumber: batch.batchNumber ?? r.batchNumber,
             quantity: toNumber(batch.quantity ?? quantity),
-            costPrice: toNumber(batch.costPrice ?? editForm.costPrice),
+            costPrice: toNumber(batch.costPrice ?? costPrice ?? r.costPrice),
             expiryDate: batch.expiryDate ?? r.expiryDate,
           };
         })
@@ -370,7 +411,7 @@ export default function WarehousePage() {
       void queryClient.invalidateQueries({ queryKey: ["warehouse"] });
       void queryClient.invalidateQueries({ queryKey: ["products"] });
     } catch {
-      setMsg("تعذر الاتصال بالخادم");
+      setEditError("تعذر الاتصال بالخادم — تحقق من الإنترنت وحاول مجدداً");
     } finally {
       setSavingEdit(false);
     }
@@ -786,6 +827,14 @@ export default function WarehousePage() {
             <p className="text-xs text-slate-400">
               التصنيف والوحدة وسعر البيع تنطبق على المنتج بكل دفعاته.
             </p>
+            {editError && (
+              <p
+                role="alert"
+                className="rounded-lg bg-danger/10 px-3 py-2 text-sm text-red-700"
+              >
+                {editError}
+              </p>
+            )}
             <Button onClick={() => void saveEdit()} disabled={savingEdit}>
               {savingEdit ? "جاري الحفظ..." : "حفظ"}
             </Button>

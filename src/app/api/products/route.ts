@@ -2,20 +2,10 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { demoBatches, demoProducts } from "@/lib/demo-data";
 import { getSessionUser, requireAdministratorForDelete } from "@/lib/auth";
+import { updateWarehouseItem } from "@/lib/warehouse/update-item";
 
 export const dynamic = "force-dynamic";
 
-const VALID_UNIT_TYPES = [
-  "BOX",
-  "CARTON",
-  "BOTTLE",
-  "INJECTABLE",
-  "VIAL",
-  "ML",
-  "STRIP",
-  "CATHETER",
-  "DRIP",
-] as const;
 
 async function resolveDefaultWarehouseId(
   requested?: string | null
@@ -389,124 +379,12 @@ export async function POST(request: Request) {
 }
 
 export async function PATCH(request: Request) {
-  const session = await getSessionUser();
-  if (!session || (session.role !== "ADMIN" && session.role !== "ADMINISTRATOR")) {
-    return NextResponse.json(
-      { error: "غير مصرح — تعديل الكمية متاح لمدير المستودع فقط" },
-      { status: 403 }
-    );
+  const body = await request.json().catch(() => null);
+  if (!body || typeof body !== "object") {
+    return NextResponse.json({ error: "بيانات الطلب غير صالحة" }, { status: 400 });
   }
-
-  try {
-    const body = await request.json().catch(() => ({}));
-    const batchId = typeof body?.batchId === "string" ? body.batchId.trim() : "";
-    const requestedProductId =
-      typeof body?.productId === "string" ? body.productId.trim() : "";
-    const has = (key: string) => body?.[key] !== undefined && body?.[key] !== null && body?.[key] !== "";
-
-    const quantity = has("quantity") ? Number(body.quantity) : undefined;
-    if (quantity !== undefined && (!Number.isInteger(quantity) || quantity < 0)) {
-      return NextResponse.json(
-        { error: "الكمية يجب أن تكون رقماً صحيحاً غير سالب" },
-        { status: 400 }
-      );
-    }
-    const costPrice = has("costPrice") ? Number(body.costPrice) : undefined;
-    const defaultPrice = has("defaultPrice") ? Number(body.defaultPrice) : undefined;
-    for (const [value, label] of [
-      [costPrice, "سعر التكلفة"],
-      [defaultPrice, "سعر البيع"],
-    ] as const) {
-      if (value !== undefined && (!Number.isFinite(value) || value < 0)) {
-        return NextResponse.json({ error: `${label} غير صالح` }, { status: 400 });
-      }
-    }
-    const expiryDate = has("expiryDate") ? new Date(body.expiryDate) : undefined;
-    if (expiryDate && Number.isNaN(expiryDate.getTime())) {
-      return NextResponse.json({ error: "تاريخ الصلاحية غير صالح" }, { status: 400 });
-    }
-    const batchNumber = has("batchNumber") ? String(body.batchNumber).trim() : undefined;
-    const category =
-      body?.category === "HUMAN" || body?.category === "VETERINARY"
-        ? (body.category as "HUMAN" | "VETERINARY")
-        : undefined;
-    const unitType = VALID_UNIT_TYPES.includes(body?.unitType)
-      ? (body.unitType as (typeof VALID_UNIT_TYPES)[number])
-      : undefined;
-
-    let productId = requestedProductId;
-    if (batchId) {
-      const existing = await prisma.stockBatch.findUnique({
-        where: { id: batchId },
-        select: { id: true, productId: true },
-      });
-      if (!existing) {
-        return NextResponse.json({ error: "الدفعة غير موجودة" }, { status: 404 });
-      }
-      productId = existing.productId;
-    }
-    if (!productId) {
-      return NextResponse.json({ error: "معرف المنتج أو الدفعة مطلوب" }, { status: 400 });
-    }
-
-    const result = await prisma.$transaction(async (tx) => {
-      const product = await tx.product.update({
-        where: { id: productId },
-        data: {
-          ...(category ? { category } : {}),
-          ...(unitType ? { unitType } : {}),
-          ...(defaultPrice !== undefined ? { defaultPrice } : {}),
-          ...(costPrice !== undefined ? { costPrice } : {}),
-        },
-      });
-
-      const batchData = {
-        ...(quantity !== undefined ? { quantity } : {}),
-        ...(costPrice !== undefined ? { costPrice } : {}),
-        ...(expiryDate ? { expiryDate } : {}),
-        ...(batchNumber ? { batchNumber } : {}),
-      };
-
-      const batch = batchId
-        ? await tx.stockBatch.update({ where: { id: batchId }, data: batchData })
-        : await tx.stockBatch.create({
-            data: {
-              productId,
-              batchNumber: batchNumber || `WH-${Date.now().toString(36).toUpperCase()}`,
-              quantity: quantity ?? 0,
-              costPrice: costPrice ?? product.costPrice,
-              expiryDate: expiryDate ?? new Date(Date.now() + 365 * 86400000),
-              warehouseId: await resolveDefaultWarehouseId(product.warehouseId),
-              pharmacyId: null,
-              manufacturer: product.manufacturer,
-              country: product.country,
-            },
-          });
-
-      return { product, batch };
-    });
-
-    return NextResponse.json({
-      ok: true,
-      product: {
-        id: result.product.id,
-        category: result.product.category,
-        unitType: result.product.unitType,
-        defaultPrice: Number(result.product.defaultPrice),
-        costPrice: Number(result.product.costPrice),
-      },
-      batch: {
-        id: result.batch.id,
-        batchNumber: result.batch.batchNumber,
-        quantity: result.batch.quantity,
-        costPrice: Number(result.batch.costPrice),
-        expiryDate: result.batch.expiryDate.toISOString(),
-      },
-    });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : "فشل تعديل الكمية";
-    return NextResponse.json({ error: message }, { status: 500 });
-  }
+  const result = await updateWarehouseItem(body);
+  return NextResponse.json(result.body, { status: result.status });
 }
 
 export async function DELETE(request: Request) {
