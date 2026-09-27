@@ -29,6 +29,18 @@ import { ConfirmDeleteDialog } from "@/components/ui/confirm-delete-dialog";
 import { useAuthStore, canDeleteRecords } from "@/lib/stores/auth-store";
 import { formatCurrency, formatDate, daysUntilExpiry, isExpired, isNearExpiry } from "@/lib/utils";
 
+const UNIT_OPTIONS = [
+  "BOX",
+  "CARTON",
+  "BOTTLE",
+  "INJECTABLE",
+  "VIAL",
+  "ML",
+  "STRIP",
+  "CATHETER",
+  "DRIP",
+];
+
 type BatchRow = {
   id: string;
   batchId?: string;
@@ -38,6 +50,7 @@ type BatchRow = {
   batchNumber: string;
   quantity: number;
   costPrice: number;
+  defaultPrice?: number;
   expiryDate: string;
   location: "WAREHOUSE" | "PHARMACY";
   manufacturer: string;
@@ -63,6 +76,7 @@ type RawProduct = {
   manufacturer?: string | null;
   country?: string | null;
   costPrice?: number | string | null;
+  defaultPrice?: number | string | null;
   availableQty?: number | string | null;
   batchId?: string | null;
   batchNumber?: string | null;
@@ -109,7 +123,7 @@ async function fetchWarehouse(): Promise<BatchRow[]> {
   let res: Response;
   let data: { error?: string; batches?: unknown; products?: unknown } | null;
   try {
-    res = await fetch("/api/products?location=all");
+    res = await fetch("/api/products?location=all&includeEmpty=1");
     data = await res.json().catch(() => null);
   } catch {
     throw new Error("تعذر الاتصال بالخادم — تحقق من الاتصال بالإنترنت");
@@ -137,15 +151,19 @@ async function fetchWarehouse(): Promise<BatchRow[]> {
       manufacturer: p.manufacturer ?? "",
       country: p.country ?? "",
       unitType: p.unitType ?? "",
+      defaultPrice: toNumber(p.defaultPrice),
     };
 
     // Stock already transferred to a pharmacy belongs to that pharmacy, not the warehouse table.
-    const productBatches = (Array.isArray(p.batches) ? p.batches : []).filter(
-      (b) => b && !b.pharmacyId
+    const warehouseBatches = (Array.isArray(p.batches) ? p.batches : []).filter(
+      (b): b is RawBatch => !!b && !b.pharmacyId
     );
+    const inStock = warehouseBatches.filter((b) => toNumber(b.quantity) > 0);
+    // Fully depleted products keep one row backed by their latest empty batch so it stays editable.
+    const productBatches =
+      inStock.length > 0 ? inStock : warehouseBatches.slice(-1);
     if (productBatches.length > 0) {
       for (const [bIdx, b] of productBatches.entries()) {
-        if (!b) continue;
         batches.push({
           ...base,
           id: b.id ?? `${productId}-batch-${bIdx}`,
@@ -154,7 +172,7 @@ async function fetchWarehouse(): Promise<BatchRow[]> {
           quantity: toNumber(b.quantity),
           costPrice: toNumber(b.costPrice ?? p.costPrice),
           expiryDate: b.expiryDate ?? "",
-          location: b.warehouseId ? "WAREHOUSE" : "PHARMACY",
+          location: "WAREHOUSE",
         });
       }
     } else {
@@ -179,8 +197,16 @@ export default function WarehousePage() {
   const allowDelete = canDeleteRecords(user?.role);
   const allowEdit = user?.role === "ADMIN" || user?.role === "ADMINISTRATOR";
   const showActions = allowEdit || allowDelete;
-  const [editingId, setEditingId] = useState<string | null>(null);
-  const [editQty, setEditQty] = useState("");
+  const [editRow, setEditRow] = useState<BatchRow | null>(null);
+  const [editForm, setEditForm] = useState({
+    quantity: "",
+    expiryDate: "",
+    batchNumber: "",
+    costPrice: "",
+    defaultPrice: "",
+    category: "HUMAN",
+    unitType: "BOX",
+  });
   const [savingEdit, setSavingEdit] = useState(false);
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState<"ALL" | "HUMAN" | "VETERINARY">("ALL");
@@ -273,18 +299,22 @@ export default function WarehousePage() {
   };
 
   const startEdit = (row: BatchRow) => {
-    setEditingId(row.id);
-    setEditQty(String(row.quantity ?? 0));
+    setEditRow(row);
+    setEditForm({
+      quantity: String(row.quantity ?? 0),
+      expiryDate: hasValidDate(row.expiryDate) ? row.expiryDate.slice(0, 10) : "",
+      batchNumber: row.batchNumber && row.batchNumber !== "-" ? row.batchNumber : "",
+      costPrice: String(row.costPrice ?? 0),
+      defaultPrice: String(row.defaultPrice ?? 0),
+      category: row.category ?? "HUMAN",
+      unitType: row.unitType || "BOX",
+    });
   };
 
-  const cancelEdit = () => {
-    setEditingId(null);
-    setEditQty("");
-  };
-
-  const saveQuantity = async (row: BatchRow) => {
-    if (!row.batchId || savingEdit) return;
-    const quantity = Number(editQty);
+  const saveEdit = async () => {
+    const row = editRow;
+    if (!row || savingEdit) return;
+    const quantity = Number(editForm.quantity);
     if (!Number.isInteger(quantity) || quantity < 0) {
       setMsg("الكمية يجب أن تكون رقماً صحيحاً غير سالب");
       return;
@@ -294,19 +324,49 @@ export default function WarehousePage() {
       const res = await fetch("/api/products", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ batchId: row.batchId, quantity }),
+        body: JSON.stringify({
+          batchId: row.batchId,
+          productId: row.productId,
+          quantity,
+          expiryDate: editForm.expiryDate || undefined,
+          batchNumber: editForm.batchNumber || undefined,
+          costPrice: editForm.costPrice === "" ? undefined : Number(editForm.costPrice),
+          defaultPrice:
+            editForm.defaultPrice === "" ? undefined : Number(editForm.defaultPrice),
+          category: editForm.category,
+          unitType: editForm.unitType,
+        }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        setMsg(data?.error || "فشل تعديل الكمية");
+        setMsg(data?.error || "فشل حفظ التعديلات");
         return;
       }
-      const newQty = toNumber(data?.batch?.quantity ?? quantity);
+      const product = data?.product ?? {};
+      const batch = data?.batch ?? {};
       queryClient.setQueryData<BatchRow[]>(["warehouse"], (prev) =>
-        (prev ?? []).map((r) => (r.id === row.id ? { ...r, quantity: newQty } : r))
+        (prev ?? []).map((r) => {
+          if (r.productId !== row.productId) return r;
+          const productFields = {
+            category: toCategory(product.category ?? editForm.category),
+            unitType: product.unitType ?? editForm.unitType,
+            defaultPrice: toNumber(product.defaultPrice ?? editForm.defaultPrice),
+          };
+          if (r.id !== row.id) return { ...r, ...productFields };
+          return {
+            ...r,
+            ...productFields,
+            id: batch.id ?? r.id,
+            batchId: batch.id ?? r.batchId,
+            batchNumber: batch.batchNumber ?? r.batchNumber,
+            quantity: toNumber(batch.quantity ?? quantity),
+            costPrice: toNumber(batch.costPrice ?? editForm.costPrice),
+            expiryDate: batch.expiryDate ?? r.expiryDate,
+          };
+        })
       );
-      setMsg(`تم تعديل كمية ${row.productName} إلى ${newQty}`);
-      cancelEdit();
+      setMsg(`تم حفظ تعديلات ${row.productName}`);
+      setEditRow(null);
       void queryClient.invalidateQueries({ queryKey: ["warehouse"] });
       void queryClient.invalidateQueries({ queryKey: ["products"] });
     } catch {
@@ -378,7 +438,7 @@ export default function WarehousePage() {
                   value={form.unitType}
                   onChange={(e) => setForm({ ...form, unitType: e.target.value })}
                 >
-                  {["BOX", "CARTON", "BOTTLE", "INJECTABLE", "VIAL", "ML", "STRIP", "CATHETER", "DRIP"].map(
+                  {UNIT_OPTIONS.map(
                     (u) => (
                       <option key={u} value={u}>
                         {u}
@@ -568,35 +628,14 @@ export default function WarehousePage() {
                       </td>
                       <td className="px-4 py-3 font-mono text-xs">{b.batchNumber}</td>
                       <td className="px-4 py-3">
-                        {editingId === b.id ? (
-                          <div className="flex items-center gap-2">
-                            <Input
-                              type="number"
-                              min={0}
-                              step={1}
-                              className="h-8 w-24"
-                              value={editQty}
-                              autoFocus
-                              onChange={(e) => setEditQty(e.target.value)}
-                              onKeyDown={(e) => {
-                                if (e.key === "Enter") void saveQuantity(b);
-                                if (e.key === "Escape") cancelEdit();
-                              }}
-                            />
-                            <span className="text-xs text-slate-400">{b.unitType}</span>
-                          </div>
-                        ) : (
-                          <>
-                            <span
-                              className={
-                                b.quantity <= 10 ? "font-bold text-danger" : "font-semibold"
-                              }
-                            >
-                              {b.quantity}
-                            </span>{" "}
-                            <span className="text-xs text-slate-400">{b.unitType}</span>
-                          </>
-                        )}
+                        <span
+                          className={
+                            b.quantity <= 10 ? "font-bold text-danger" : "font-semibold"
+                          }
+                        >
+                          {b.quantity}
+                        </span>{" "}
+                        <span className="text-xs text-slate-400">{b.unitType}</span>
                       </td>
                       <td className="px-4 py-3">{formatCurrency(b.costPrice)}</td>
                       <td className="px-4 py-3">
@@ -618,38 +657,16 @@ export default function WarehousePage() {
                       {showActions && (
                         <td className="px-4 py-3">
                           <div className="flex flex-wrap items-center gap-2">
-                            {allowEdit && b.batchId && (
-                              editingId === b.id ? (
-                                <>
-                                  <Button
-                                    type="button"
-                                    size="sm"
-                                    disabled={savingEdit}
-                                    onClick={() => void saveQuantity(b)}
-                                  >
-                                    {savingEdit ? "جاري الحفظ..." : "حفظ"}
-                                  </Button>
-                                  <Button
-                                    type="button"
-                                    variant="outline"
-                                    size="sm"
-                                    disabled={savingEdit}
-                                    onClick={cancelEdit}
-                                  >
-                                    إلغاء
-                                  </Button>
-                                </>
-                              ) : (
-                                <Button
-                                  type="button"
-                                  variant="outline"
-                                  size="sm"
-                                  onClick={() => startEdit(b)}
-                                >
-                                  <Pencil className="h-3.5 w-3.5" />
-                                  تعديل
-                                </Button>
-                              )
+                            {allowEdit && (
+                              <Button
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                onClick={() => startEdit(b)}
+                              >
+                                <Pencil className="h-3.5 w-3.5" />
+                                تعديل
+                              </Button>
                             )}
                             {allowDelete && (
                               <Button
@@ -680,6 +697,101 @@ export default function WarehousePage() {
           )}
         </CardContent>
       </Card>
+
+      <Dialog
+        open={!!editRow}
+        onOpenChange={(next) => {
+          if (!next && !savingEdit) setEditRow(null);
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>تعديل: {editRow?.productName}</DialogTitle>
+          </DialogHeader>
+          <div className="grid gap-3">
+            <div className="grid grid-cols-2 gap-2">
+              <label className="grid gap-1 text-xs text-slate-500">
+                الكمية
+                <Input
+                  type="number"
+                  min={0}
+                  step={1}
+                  value={editForm.quantity}
+                  onChange={(e) => setEditForm({ ...editForm, quantity: e.target.value })}
+                />
+              </label>
+              <label className="grid gap-1 text-xs text-slate-500">
+                تاريخ الصلاحية
+                <Input
+                  type="date"
+                  value={editForm.expiryDate}
+                  onChange={(e) => setEditForm({ ...editForm, expiryDate: e.target.value })}
+                />
+              </label>
+            </div>
+            <label className="grid gap-1 text-xs text-slate-500">
+              رقم الدفعة
+              <Input
+                value={editForm.batchNumber}
+                onChange={(e) => setEditForm({ ...editForm, batchNumber: e.target.value })}
+              />
+            </label>
+            <div className="grid grid-cols-2 gap-2">
+              <label className="grid gap-1 text-xs text-slate-500">
+                سعر التكلفة
+                <Input
+                  type="number"
+                  min={0}
+                  value={editForm.costPrice}
+                  onChange={(e) => setEditForm({ ...editForm, costPrice: e.target.value })}
+                />
+              </label>
+              <label className="grid gap-1 text-xs text-slate-500">
+                سعر البيع
+                <Input
+                  type="number"
+                  min={0}
+                  value={editForm.defaultPrice}
+                  onChange={(e) => setEditForm({ ...editForm, defaultPrice: e.target.value })}
+                />
+              </label>
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <label className="grid gap-1 text-xs text-slate-500">
+                التصنيف
+                <select
+                  className="h-10 rounded-lg border border-slate-200 px-3 text-sm text-secondary"
+                  value={editForm.category}
+                  onChange={(e) => setEditForm({ ...editForm, category: e.target.value })}
+                >
+                  <option value="HUMAN">بشري</option>
+                  <option value="VETERINARY">بيطري</option>
+                </select>
+              </label>
+              <label className="grid gap-1 text-xs text-slate-500">
+                نوع/وحدة التغليف
+                <select
+                  className="h-10 rounded-lg border border-slate-200 px-3 text-sm text-secondary"
+                  value={editForm.unitType}
+                  onChange={(e) => setEditForm({ ...editForm, unitType: e.target.value })}
+                >
+                  {UNIT_OPTIONS.map((u) => (
+                    <option key={u} value={u}>
+                      {u}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+            <p className="text-xs text-slate-400">
+              التصنيف والوحدة وسعر البيع تنطبق على المنتج بكل دفعاته.
+            </p>
+            <Button onClick={() => void saveEdit()} disabled={savingEdit}>
+              {savingEdit ? "جاري الحفظ..." : "حفظ"}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
 
       <ConfirmDeleteDialog
         open={!!deleteTarget}
