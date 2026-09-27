@@ -374,6 +374,9 @@ export default function OrdersPage() {
                   >
                     <span className="truncate">
                       {productName || "اختر المنتج من المخزون"}
+                      {productName && unitType && (
+                        <span className="ms-1.5 text-xs text-slate-400">({unitType})</span>
+                      )}
                     </span>
                     <ChevronDown
                       className={cn(
@@ -428,10 +431,16 @@ export default function OrdersPage() {
                               >
                                 <span className="text-sm font-medium text-secondary">
                                   {product.name}
+                                  {product.unitType && (
+                                    <span className="ms-1.5 text-xs font-normal text-slate-400">
+                                      ({product.unitType})
+                                    </span>
+                                  )}
                                 </span>
                                 <span className="flex flex-wrap items-center gap-1.5">
                                   <Badge variant="outline">
                                     متبقي {product.availableQty ?? 0}
+                                    {product.unitType ? ` ${product.unitType}` : ""}
                                   </Badge>
                                   {isLow && (
                                     <Badge variant="warning">كمية منخفضة</Badge>
