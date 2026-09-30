@@ -176,6 +176,12 @@ export function Sidebar() {
             <Boxes className="h-3.5 w-3.5" />
             <span>بشري · بيطري</span>
           </div>
+          <div className="border-t border-white/10 pt-3 text-center text-[11px] leading-relaxed text-slate-400">
+            <p>تم التطوير بواسطة</p>
+            <p dir="ltr" className="font-semibold tracking-wide text-teal-300">
+              HT DIGITAL SOFTWARE SOLUTIONS
+            </p>
+          </div>
         </div>
       </aside>
     </>
