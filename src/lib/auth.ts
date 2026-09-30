@@ -6,9 +6,11 @@ import {
   verifySessionToken,
   type SessionUser,
 } from "@/lib/auth-session";
+import { prisma } from "@/lib/prisma";
 
 export {
   AUTH_COOKIE,
+  BLOCKED_ACCOUNT_MESSAGE,
   ROLE_COOKIE,
   createSessionToken,
   verifySessionToken,
@@ -28,9 +30,25 @@ export async function verifyPassword(
   return bcrypt.compare(password, passwordHash);
 }
 
+/** True when the account is blocked; a DB outage never locks users out. */
+export async function isUserBlocked(userId: string): Promise<boolean> {
+  try {
+    const row = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { isBlocked: true },
+    });
+    return !!row?.isBlocked;
+  } catch {
+    return false;
+  }
+}
+
 export async function getSessionUser(): Promise<SessionUser | null> {
   const jar = await cookies();
-  return verifySessionToken(jar.get(AUTH_COOKIE)?.value);
+  const session = await verifySessionToken(jar.get(AUTH_COOKIE)?.value);
+  if (!session) return null;
+  if (await isUserBlocked(session.id)) return null;
+  return session;
 }
 
 /** Super-admin gate for destructive DELETE operations. */

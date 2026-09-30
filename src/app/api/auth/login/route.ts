@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import {
   AUTH_COOKIE,
+  BLOCKED_ACCOUNT_MESSAGE,
   ROLE_COOKIE,
   createSessionToken,
   roleHome,
@@ -37,6 +38,13 @@ export async function POST(request: Request) {
       return NextResponse.json(
         { error: "بيانات الدخول غير صحيحة" },
         { status: 401 }
+      );
+    }
+
+    if (user.isBlocked) {
+      return NextResponse.json(
+        { error: BLOCKED_ACCOUNT_MESSAGE, blocked: true },
+        { status: 403 }
       );
     }
 

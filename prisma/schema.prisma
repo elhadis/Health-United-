@@ -67,6 +67,7 @@ model User {
   email        String?    @unique
   passwordHash String
   role         Role       @default(USER)
+  isBlocked    Boolean    @default(false)
   pharmacyId   String?
   warehouseId  String?
   pharmacy     Pharmacy?  @relation(fields: [pharmacyId], references: [id])

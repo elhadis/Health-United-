@@ -16,6 +16,14 @@ function AuthBootstrap({ children }: { children: ReactNode }) {
         const res = await fetch("/api/auth/me");
         if (!res.ok) {
           if (!cancelled) setUser(null);
+          const data = await res.json().catch(() => ({}));
+          if (
+            !cancelled &&
+            data?.blocked &&
+            !window.location.pathname.startsWith("/login")
+          ) {
+            window.location.replace("/login?blocked=1");
+          }
           return;
         }
         const data = await res.json();

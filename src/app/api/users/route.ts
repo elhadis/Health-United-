@@ -20,6 +20,7 @@ export async function GET() {
       username: true,
       email: true,
       role: true,
+      isBlocked: true,
       pharmacyId: true,
       warehouseId: true,
       createdAt: true,
@@ -30,6 +31,66 @@ export async function GET() {
   });
 
   return NextResponse.json({ users });
+}
+
+/** Block / unblock a user account (ADMINISTRATOR only). */
+export async function PATCH(request: Request) {
+  const session = await getSessionUser();
+  if (!session || session.role !== "ADMINISTRATOR") {
+    return NextResponse.json(
+      { error: "فقط المدير العام يمكنه حظر المستخدمين" },
+      { status: 403 }
+    );
+  }
+
+  try {
+    const body = await request.json().catch(() => ({}));
+    const id = String(body.id || "").trim();
+    if (!id) {
+      return NextResponse.json({ error: "معرف المستخدم مطلوب" }, { status: 400 });
+    }
+    if (typeof body.isBlocked !== "boolean") {
+      return NextResponse.json({ error: "قيمة الحظر غير صالحة" }, { status: 400 });
+    }
+    const isBlocked: boolean = body.isBlocked;
+
+    if (isBlocked && id === session.id) {
+      return NextResponse.json(
+        { error: "لا يمكنك حظر حسابك الحالي" },
+        { status: 400 }
+      );
+    }
+
+    const target = await prisma.user.findUnique({
+      where: { id },
+      select: { id: true, role: true },
+    });
+    if (!target) {
+      return NextResponse.json({ error: "المستخدم غير موجود" }, { status: 404 });
+    }
+
+    if (isBlocked && target.role === "ADMINISTRATOR") {
+      const activeAdmins = await prisma.user.count({
+        where: { role: "ADMINISTRATOR", isBlocked: false },
+      });
+      if (activeAdmins <= 1) {
+        return NextResponse.json(
+          { error: "لا يمكن حظر آخر مدير عام نشط في النظام" },
+          { status: 400 }
+        );
+      }
+    }
+
+    const user = await prisma.user.update({
+      where: { id },
+      data: { isBlocked },
+      select: { id: true, username: true, isBlocked: true },
+    });
+    return NextResponse.json({ user });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "فشل تحديث حالة المستخدم";
+    return NextResponse.json({ error: message }, { status: 500 });
+  }
 }
 
 export async function POST(request: Request) {
@@ -104,6 +165,7 @@ export async function POST(request: Request) {
         username: true,
         email: true,
         role: true,
+        isBlocked: true,
         pharmacyId: true,
         warehouseId: true,
         createdAt: true,

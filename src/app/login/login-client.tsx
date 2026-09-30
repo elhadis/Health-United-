@@ -9,6 +9,7 @@ import { Input } from "@/components/ui/input";
 import { useAuthStore } from "@/lib/stores/auth-store";
 import { BrandLogo } from "@/components/branding/brand-logo";
 import { APP_TAGLINE, COMPANY_NAME_AR, COMPANY_NAME_EN } from "@/lib/branding";
+import { BLOCKED_ACCOUNT_MESSAGE } from "@/lib/auth-session";
 
 export default function LoginClient() {
   const router = useRouter();
@@ -16,7 +17,9 @@ export default function LoginClient() {
   const setUser = useAuthStore((s) => s.setUser);
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(
+    searchParams.get("blocked") ? BLOCKED_ACCOUNT_MESSAGE : null
+  );
   const [loading, setLoading] = useState(false);
 
   const onSubmit = async (e: FormEvent) => {

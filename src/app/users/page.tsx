@@ -3,7 +3,7 @@
 import { FormEvent, useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { motion } from "framer-motion";
-import { Users, UserPlus, Shield, Trash2 } from "lucide-react";
+import { Users, UserPlus, Shield, Trash2, Ban, ShieldCheck } from "lucide-react";
 import { AppShell } from "@/components/layout/app-shell";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -27,6 +27,7 @@ type UserRow = {
   username: string;
   email: string | null;
   role: Role;
+  isBlocked?: boolean;
   pharmacyId: string | null;
   warehouseId: string | null;
   createdAt: string;
@@ -38,6 +39,9 @@ export default function UsersPage() {
   const queryClient = useQueryClient();
   const currentUser = useAuthStore((s) => s.user);
   const allowDelete = canDeleteRecords(currentUser?.role);
+  const allowBlock = currentUser?.role === "ADMINISTRATOR";
+  const showActions = allowDelete || allowBlock;
+  const [blockingId, setBlockingId] = useState<string | null>(null);
   const [open, setOpen] = useState(false);
   const [deleteUserId, setDeleteUserId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -113,6 +117,38 @@ export default function UsersPage() {
       warehouseId: "",
     });
     void queryClient.invalidateQueries({ queryKey: ["users"] });
+  };
+
+  const toggleBlock = async (user: UserRow) => {
+    const next = !user.isBlocked;
+    setBlockingId(user.id);
+    setError(null);
+    setSuccess(null);
+    try {
+      const res = await fetch("/api/users", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: user.id, isBlocked: next }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setError(data.error || "فشل تحديث حالة المستخدم");
+        return;
+      }
+      queryClient.setQueryData<UserRow[]>(["users"], (prev) =>
+        (prev ?? []).map((u) => (u.id === user.id ? { ...u, isBlocked: next } : u))
+      );
+      setSuccess(
+        next
+          ? `تم حظر المستخدم ${user.username}`
+          : `تم إلغاء حظر المستخدم ${user.username}`
+      );
+      void queryClient.invalidateQueries({ queryKey: ["users"] });
+    } catch {
+      setError("تعذر الاتصال بالخادم");
+    } finally {
+      setBlockingId(null);
+    }
   };
 
   const confirmDeleteUser = async () => {
@@ -221,6 +257,11 @@ export default function UsersPage() {
           {success}
         </p>
       )}
+      {error && !open && (
+        <p className="mb-4 rounded-lg bg-danger/10 px-3 py-2 text-sm text-red-700">
+          {error}
+        </p>
+      )}
 
       <div className="mb-6 grid gap-4 md:grid-cols-3">
         {(["ADMINISTRATOR", "ADMIN", "USER"] as Role[]).map((role) => (
@@ -260,7 +301,8 @@ export default function UsersPage() {
                   <th className="px-4 py-3 text-right font-medium">الصيدلية</th>
                   <th className="px-4 py-3 text-right font-medium">المستودع</th>
                   <th className="px-4 py-3 text-right font-medium">تاريخ الإنشاء</th>
-                  {allowDelete && (
+                  <th className="px-4 py-3 text-right font-medium">الحالة</th>
+                  {showActions && (
                     <th className="px-4 py-3 text-right font-medium">إجراء</th>
                   )}
                 </tr>
@@ -284,18 +326,49 @@ export default function UsersPage() {
                     <td className="px-4 py-3">{user.pharmacy?.name ?? "—"}</td>
                     <td className="px-4 py-3">{user.warehouse?.name ?? "—"}</td>
                     <td className="px-4 py-3">{formatDate(user.createdAt)}</td>
-                    {allowDelete && (
+                    <td className="px-4 py-3">
+                      <Badge variant={user.isBlocked ? "danger" : "success"}>
+                        {user.isBlocked ? "محظور" : "نشط"}
+                      </Badge>
+                    </td>
+                    {showActions && (
                       <td className="px-4 py-3">
-                        <Button
-                          type="button"
-                          variant="danger"
-                          size="sm"
-                          disabled={user.id === currentUser?.id}
-                          onClick={() => setDeleteUserId(user.id)}
-                        >
-                          <Trash2 className="h-3.5 w-3.5" />
-                          حذف
-                        </Button>
+                        <div className="flex flex-wrap items-center gap-2">
+                          {allowBlock && (
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              disabled={
+                                user.id === currentUser?.id || blockingId === user.id
+                              }
+                              onClick={() => void toggleBlock(user)}
+                            >
+                              {user.isBlocked ? (
+                                <ShieldCheck className="h-3.5 w-3.5" />
+                              ) : (
+                                <Ban className="h-3.5 w-3.5" />
+                              )}
+                              {blockingId === user.id
+                                ? "جاري التحديث..."
+                                : user.isBlocked
+                                  ? "إلغاء الحظر"
+                                  : "حظر"}
+                            </Button>
+                          )}
+                          {allowDelete && (
+                            <Button
+                              type="button"
+                              variant="danger"
+                              size="sm"
+                              disabled={user.id === currentUser?.id}
+                              onClick={() => setDeleteUserId(user.id)}
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                              حذف
+                            </Button>
+                          )}
+                        </div>
                       </td>
                     )}
                   </motion.tr>

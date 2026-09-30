@@ -1,6 +1,8 @@
 export type Role = "ADMINISTRATOR" | "ADMIN" | "USER";
 
 export const AUTH_COOKIE = "pharmacy_session";
+export const BLOCKED_ACCOUNT_MESSAGE =
+  "تم حظر هذا الحساب من قبل الإدارة. يرجى التواصل مع المسؤول.";
 export const ROLE_COOKIE = "userRole";
 
 export type SessionUser = {
