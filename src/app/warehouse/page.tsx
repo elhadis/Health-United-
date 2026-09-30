@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useMemo, useState, type KeyboardEvent } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { motion } from "framer-motion";
 import {
@@ -12,6 +12,7 @@ import {
   Plus,
   Trash2,
   Pencil,
+  FileDown,
 } from "lucide-react";
 import { AppShell } from "@/components/layout/app-shell";
 import { Button } from "@/components/ui/button";
@@ -28,6 +29,48 @@ import {
 import { ConfirmDeleteDialog } from "@/components/ui/confirm-delete-dialog";
 import { useAuthStore, canDeleteRecords } from "@/lib/stores/auth-store";
 import { formatCurrency, formatDate, daysUntilExpiry, isExpired, isNearExpiry } from "@/lib/utils";
+import { downloadTabularReportPdf } from "@/lib/pdf/official-pdf";
+
+type CardModal = "all" | "low" | "expiry";
+
+const CARD_MODAL_META: Record<
+  CardModal,
+  { title: string; titleEn: string; file: string; empty: string }
+> = {
+  all: {
+    title: "إجمالي الدفعات",
+    titleEn: "Warehouse Batches Report",
+    file: "all-batches",
+    empty: "لا توجد دفعات",
+  },
+  low: {
+    title: "مخزون منخفض",
+    titleEn: "Low Stock Report",
+    file: "low-stock",
+    empty: "لا توجد أصناف منخفضة المخزون",
+  },
+  expiry: {
+    title: "قرب / منتهي الصلاحية",
+    titleEn: "Near / Expired Stock Report",
+    file: "expiry",
+    empty: "لا توجد أصناف قريبة أو منتهية الصلاحية",
+  },
+};
+
+const LOW_STOCK_LIMIT = 10;
+
+type RowStatus = { label: string; variant: "danger" | "warning" | "success" };
+
+function rowStatus(b: { quantity: number; expiryDate: string }): RowStatus {
+  const validExpiry = !!b.expiryDate && !Number.isNaN(new Date(b.expiryDate).getTime());
+  if (validExpiry && isExpired(b.expiryDate)) return { label: "منتهي", variant: "danger" };
+  if (b.quantity <= 0) return { label: "نفذ", variant: "danger" };
+  if (validExpiry && isNearExpiry(b.expiryDate)) {
+    return { label: "قريب الانتهاء", variant: "warning" };
+  }
+  if (b.quantity <= LOW_STOCK_LIMIT) return { label: "منخفض", variant: "warning" };
+  return { label: "متوفر", variant: "success" };
+}
 
 const UNIT_OPTIONS = [
   "BOX",
@@ -275,6 +318,131 @@ export default function WarehousePage() {
     );
     return { low, expiry };
   }, [filtered]);
+
+  const [cardModal, setCardModal] = useState<CardModal | null>(null);
+  const [cardPdfBusy, setCardPdfBusy] = useState(false);
+  const [cardPdfError, setCardPdfError] = useState<string | null>(null);
+
+  const cardRows = useMemo(() => {
+    if (cardModal === "low") return alerts.low;
+    if (cardModal === "expiry") {
+      return [...alerts.expiry].sort(
+        (a, b) => new Date(a.expiryDate).getTime() - new Date(b.expiryDate).getTime()
+      );
+    }
+    return filtered;
+  }, [cardModal, alerts, filtered]);
+
+  const cardTotals = useMemo(
+    () => ({
+      count: cardRows.length,
+      quantity: cardRows.reduce((s, b) => s + (b.quantity ?? 0), 0),
+    }),
+    [cardRows]
+  );
+
+  const exportCardPdf = async () => {
+    if (!cardModal) return;
+    const meta = CARD_MODAL_META[cardModal];
+    setCardPdfBusy(true);
+    setCardPdfError(null);
+    try {
+      const categoryLabel =
+        category === "ALL"
+          ? "All · الكل"
+          : category === "HUMAN"
+            ? "Human · بشري"
+            : "Veterinary · بيطري";
+      const expiredCount = cardRows.filter(
+        (b) => hasValidDate(b.expiryDate) && isExpired(b.expiryDate)
+      ).length;
+      await downloadTabularReportPdf(
+        {
+          title: meta.titleEn,
+          titleAr: meta.title,
+          reference: `WH-${Date.now().toString(36).toUpperCase()}`,
+          date: new Date().toLocaleString("en-GB", {
+            day: "2-digit",
+            month: "2-digit",
+            year: "numeric",
+            hour: "2-digit",
+            minute: "2-digit",
+          }),
+          meta: [
+            { label: "Category / التصنيف", value: categoryLabel },
+            ...(query.trim()
+              ? [{ label: "Search / البحث", value: query.trim() }]
+              : []),
+          ],
+          summaryCards: [
+            { labelEn: "Items", labelAr: "عدد الأصناف", value: String(cardTotals.count) },
+            {
+              labelEn: "Total Quantity",
+              labelAr: "إجمالي الكمية",
+              value: String(cardTotals.quantity),
+            },
+            cardModal === "expiry"
+              ? { labelEn: "Expired", labelAr: "منتهية", value: String(expiredCount) }
+              : {
+                  labelEn: "Stock Value",
+                  labelAr: "قيمة المخزون",
+                  value: `${cardRows
+                    .reduce((s, b) => s + b.quantity * b.costPrice, 0)
+                    .toLocaleString("en-US", {
+                      minimumFractionDigits: 2,
+                      maximumFractionDigits: 2,
+                    })} SDG`,
+                },
+          ],
+          sections: [
+            {
+              columns: [
+                { en: "Product", ar: "المنتج", width: 0.27 },
+                { en: "Category", ar: "التصنيف", width: 0.11, align: "center" },
+                { en: "Batch", ar: "الدفعة", width: 0.15 },
+                { en: "Expiry", ar: "الصلاحية", width: 0.13, align: "center" },
+                { en: "Unit", ar: "الوحدة", width: 0.11, align: "center" },
+                { en: "Qty", ar: "الكمية", width: 0.09, align: "center" },
+                { en: "Status", ar: "الحالة", width: 0.14, align: "center" },
+              ],
+              rows: cardRows.map((b) => [
+                b.productName,
+                b.category === "HUMAN" ? "بشري" : "بيطري",
+                b.batchNumber,
+                hasValidDate(b.expiryDate)
+                  ? new Date(b.expiryDate).toLocaleDateString("en-GB")
+                  : "-",
+                b.unitType || "-",
+                String(b.quantity),
+                rowStatus(b).label,
+              ]),
+              emptyText: meta.empty,
+            },
+          ],
+        },
+        `warehouse-${meta.file}-${new Date().toISOString().slice(0, 10)}.pdf`
+      );
+    } catch (err) {
+      console.error("[warehouse pdf]", err);
+      setCardPdfError("تعذر إنشاء ملف PDF، حاول مرة أخرى");
+    } finally {
+      setCardPdfBusy(false);
+    }
+  };
+
+  const cardProps = (key: CardModal) => ({
+    className:
+      "cursor-pointer transition-all hover:shadow-md hover:ring-2 hover:ring-primary/25 active:scale-[0.99]",
+    role: "button" as const,
+    tabIndex: 0,
+    onClick: () => setCardModal(key),
+    onKeyDown: (e: KeyboardEvent<HTMLDivElement>) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        setCardModal(key);
+      }
+    },
+  });
 
   const confirmDeleteProduct = async () => {
     if (!deleteTarget) return;
@@ -541,7 +709,7 @@ export default function WarehousePage() {
       }
     >
       <div className="mb-6 grid gap-4 md:grid-cols-3">
-        <Card>
+        <Card {...cardProps("all")}>
           <CardContent className="flex items-center gap-3 p-5">
             <div className="rounded-xl bg-primary/10 p-3 text-primary">
               <Boxes className="h-5 w-5" />
@@ -552,7 +720,7 @@ export default function WarehousePage() {
             </div>
           </CardContent>
         </Card>
-        <Card>
+        <Card {...cardProps("low")}>
           <CardContent className="flex items-center gap-3 p-5">
             <div className="rounded-xl bg-warning/10 p-3 text-warning">
               <AlertTriangle className="h-5 w-5" />
@@ -563,7 +731,7 @@ export default function WarehousePage() {
             </div>
           </CardContent>
         </Card>
-        <Card>
+        <Card {...cardProps("expiry")}>
           <CardContent className="flex items-center gap-3 p-5">
             <div className="rounded-xl bg-danger/10 p-3 text-danger">
               <AlertTriangle className="h-5 w-5" />
@@ -838,6 +1006,113 @@ export default function WarehousePage() {
             <Button onClick={() => void saveEdit()} disabled={savingEdit}>
               {savingEdit ? "جاري الحفظ..." : "حفظ"}
             </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={cardModal !== null}
+        onOpenChange={(next) => {
+          if (!next) {
+            setCardModal(null);
+            setCardPdfError(null);
+          }
+        }}
+      >
+        <DialogContent className="max-h-[85vh] max-w-3xl overflow-hidden p-4 sm:p-6">
+          <DialogHeader>
+            <DialogTitle>
+              {cardModal ? CARD_MODAL_META[cardModal].title : ""}
+              {category !== "ALL" && (
+                <span className="text-sm font-normal text-slate-500">
+                  {" "}
+                  — {category === "HUMAN" ? "بشري" : "بيطري"}
+                </span>
+              )}
+            </DialogTitle>
+          </DialogHeader>
+          <div className="max-h-[55vh] overflow-auto">
+            <table className="w-full min-w-[640px] text-sm">
+              <thead className="bg-slate-50 text-slate-500">
+                <tr>
+                  <th className="px-3 py-2 text-right font-medium">المنتج</th>
+                  <th className="px-3 py-2 text-right font-medium">التصنيف</th>
+                  <th className="px-3 py-2 text-right font-medium">الدفعة</th>
+                  <th className="px-3 py-2 text-right font-medium">الصلاحية</th>
+                  <th className="px-3 py-2 text-right font-medium">الوحدة</th>
+                  <th className="px-3 py-2 text-right font-medium">الكمية</th>
+                  <th className="px-3 py-2 text-right font-medium">الحالة</th>
+                </tr>
+              </thead>
+              <tbody>
+                {cardRows.map((b) => {
+                  const status = rowStatus(b);
+                  const validExpiry = hasValidDate(b.expiryDate);
+                  const days = validExpiry ? daysUntilExpiry(b.expiryDate) : 0;
+                  return (
+                    <tr key={b.id} className="border-t border-slate-100">
+                      <td className="px-3 py-2 font-medium">{b.productName}</td>
+                      <td className="px-3 py-2">
+                        <Badge variant={b.category === "HUMAN" ? "default" : "warning"}>
+                          {b.category === "HUMAN" ? "بشري" : "بيطري"}
+                        </Badge>
+                      </td>
+                      <td className="px-3 py-2 font-mono text-xs">{b.batchNumber}</td>
+                      <td className="px-3 py-2">
+                        {validExpiry ? formatDate(b.expiryDate) : "-"}
+                        {validExpiry && isNearExpiry(b.expiryDate) && (
+                          <span className="block text-xs text-slate-400">
+                            {days} يوم
+                          </span>
+                        )}
+                      </td>
+                      <td className="px-3 py-2 text-xs">{b.unitType || "-"}</td>
+                      <td
+                        className={
+                          b.quantity <= LOW_STOCK_LIMIT
+                            ? "px-3 py-2 font-bold text-danger"
+                            : "px-3 py-2 font-semibold"
+                        }
+                      >
+                        {b.quantity}
+                      </td>
+                      <td className="px-3 py-2">
+                        <Badge variant={status.variant}>{status.label}</Badge>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+            {cardRows.length === 0 && (
+              <p className="py-4 text-center text-sm text-slate-500">
+                {cardModal ? CARD_MODAL_META[cardModal].empty : ""}
+              </p>
+            )}
+          </div>
+          <div className="mt-3 space-y-2 border-t border-slate-100 pt-3">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="flex flex-wrap gap-2 text-sm">
+                <div className="rounded-lg bg-slate-50 px-3 py-1.5">
+                  <span className="text-slate-500">إجمالي عدد الأصناف: </span>
+                  <span className="font-bold">{cardTotals.count}</span>
+                </div>
+                <div className="rounded-lg bg-primary/5 px-3 py-1.5">
+                  <span className="text-slate-500">إجمالي الكمية: </span>
+                  <span className="font-bold text-primary">{cardTotals.quantity}</span>
+                </div>
+              </div>
+              <Button
+                type="button"
+                size="sm"
+                onClick={() => void exportCardPdf()}
+                disabled={cardPdfBusy}
+              >
+                <FileDown className="h-4 w-4" />
+                {cardPdfBusy ? "جاري التحميل..." : "تحميل PDF"}
+              </Button>
+            </div>
+            {cardPdfError && <p className="text-xs text-danger">{cardPdfError}</p>}
           </div>
         </DialogContent>
       </Dialog>
