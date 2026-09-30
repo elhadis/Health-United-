@@ -287,13 +287,13 @@ export async function GET(request: Request) {
       productCount: products.length,
     };
 
-    // Out of stock: fully depleted products whose last movement falls in the period.
+    // Out of stock: products with pharmacy activity (confirmed receipts or POS
+    // sales) whose remaining (total confirmed received − total POS sold) is zero.
     const outOfStock = Array.from(map.values())
       .filter(
         (row) =>
-          row.receivedAll > 0 &&
-          row.receivedAll - row.soldAll <= 0 &&
-          row.pharmacyStock <= 0
+          (row.receivedAll > 0 || row.soldAll > 0) &&
+          row.receivedAll - row.soldAll <= 0
       )
       .map((row) => {
         const depletedAt = later(row.lastReceivedAt, row.lastSoldAt);
@@ -306,11 +306,6 @@ export async function GET(request: Request) {
           lastSoldAt: row.lastSoldAt?.toISOString() ?? null,
           depletedAt: depletedAt?.toISOString() ?? null,
         };
-      })
-      .filter((row) => {
-        if (!row.depletedAt) return false;
-        const t = new Date(row.depletedAt).getTime();
-        return t >= from.getTime() && t <= to.getTime();
       })
       .sort((a, b) => a.productName.localeCompare(b.productName, "ar"));
 

@@ -326,7 +326,7 @@ export function ReceptionReportsTab({
               String(p.soldAll),
               p.depletedAt ? pdfDate(p.depletedAt) : "-",
             ]),
-            emptyText: "لا توجد أصناف نفذت في هذه الفترة",
+            emptyText: "لا توجد أصناف رصيدها صفر",
           },
         ],
       },
@@ -597,7 +597,7 @@ export function ReceptionReportsTab({
               </div>
               <p className="text-xs text-slate-500">
                 {alertTab === "outOfStock"
-                  ? `أصناف أصبح رصيدها صفراً خلال ${rangeLabel(range)}`
+                  ? "أصناف رصيدها المتبقي صفر (المستلم المؤكد من الصيدلية − المباع في نقطة البيع)"
                   : `الدفعات المنتهية وما ينتهي خلال ${data.expiryHorizonDays ?? 30} يوماً`}
               </p>
             </CardHeader>
@@ -606,7 +606,7 @@ export function ReceptionReportsTab({
                 <>
                   {outOfStock.length === 0 && (
                     <p className="text-sm text-slate-500">
-                      لا توجد أصناف نفذت في هذه الفترة
+                      لا توجد أصناف رصيدها صفر
                     </p>
                   )}
                   {outOfStock.map((row) => (
