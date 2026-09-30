@@ -21,6 +21,13 @@ function getRangeBounds(range: RangeKey) {
   return { from, to };
 }
 
+/** Near-expiry look-ahead window grows with the selected period. */
+const EXPIRY_HORIZON_DAYS: Record<RangeKey, number> = {
+  today: 7,
+  week: 30,
+  month: 90,
+};
+
 /**
  * Cashier reception / remaining-stock report.
  * remaining = total confirmed received − total POS sold (per product).
@@ -61,8 +68,18 @@ export async function GET(request: Request) {
       );
     }
 
-    const [confirmedAll, confirmedPeriod, salesAll, salesPeriod, liveBatches] =
-      await Promise.all([
+    const horizonDays = EXPIRY_HORIZON_DAYS[range];
+    const expiryHorizon = new Date(to);
+    expiryHorizon.setDate(expiryHorizon.getDate() + horizonDays);
+
+    const [
+      confirmedAll,
+      confirmedPeriod,
+      salesAll,
+      salesPeriod,
+      liveBatches,
+      expiringBatches,
+    ] = await Promise.all([
         prisma.orderItem.findMany({
           where: {
             order: {
@@ -103,6 +120,7 @@ export async function GET(request: Request) {
             productName: true,
             quantity: true,
             unitType: true,
+            sale: { select: { createdAt: true } },
           },
         }),
         prisma.saleItem.findMany({
@@ -130,6 +148,22 @@ export async function GET(request: Request) {
             product: { select: { name: true, unitType: true } },
           },
         }),
+        prisma.stockBatch.findMany({
+          where: {
+            pharmacyId,
+            quantity: { gt: 0 },
+            expiryDate: { lte: expiryHorizon },
+          },
+          select: {
+            id: true,
+            batchNumber: true,
+            quantity: true,
+            costPrice: true,
+            expiryDate: true,
+            product: { select: { name: true, unitType: true } },
+          },
+          orderBy: { expiryDate: "asc" },
+        }),
       ]);
 
     type Acc = {
@@ -141,7 +175,12 @@ export async function GET(request: Request) {
       soldAll: number;
       soldPeriod: number;
       pharmacyStock: number;
+      lastReceivedAt: Date | null;
+      lastSoldAt: Date | null;
     };
+
+    const later = (a: Date | null, b: Date | null | undefined) =>
+      !b ? a : !a || b > a ? b : a;
 
     const map = new Map<string, Acc>();
 
@@ -161,6 +200,8 @@ export async function GET(request: Request) {
           soldAll: 0,
           soldPeriod: 0,
           pharmacyStock: 0,
+          lastReceivedAt: null,
+          lastSoldAt: null,
         };
         map.set(productId, row);
       }
@@ -174,6 +215,7 @@ export async function GET(request: Request) {
         item.unitType
       );
       row.receivedAll += item.quantity;
+      row.lastReceivedAt = later(row.lastReceivedAt, item.order.confirmedAt);
     }
 
     for (const item of confirmedPeriod) {
@@ -192,6 +234,7 @@ export async function GET(request: Request) {
         item.unitType
       );
       row.soldAll += item.quantity;
+      row.lastSoldAt = later(row.lastSoldAt, item.sale?.createdAt);
     }
 
     for (const item of salesPeriod) {
@@ -244,6 +287,49 @@ export async function GET(request: Request) {
       productCount: products.length,
     };
 
+    // Out of stock: fully depleted products whose last movement falls in the period.
+    const outOfStock = Array.from(map.values())
+      .filter(
+        (row) =>
+          row.receivedAll > 0 &&
+          row.receivedAll - row.soldAll <= 0 &&
+          row.pharmacyStock <= 0
+      )
+      .map((row) => {
+        const depletedAt = later(row.lastReceivedAt, row.lastSoldAt);
+        return {
+          productId: row.productId,
+          productName: row.productName,
+          unitType: row.unitType,
+          receivedAll: row.receivedAll,
+          soldAll: row.soldAll,
+          lastSoldAt: row.lastSoldAt?.toISOString() ?? null,
+          depletedAt: depletedAt?.toISOString() ?? null,
+        };
+      })
+      .filter((row) => {
+        if (!row.depletedAt) return false;
+        const t = new Date(row.depletedAt).getTime();
+        return t >= from.getTime() && t <= to.getTime();
+      })
+      .sort((a, b) => a.productName.localeCompare(b.productName, "ar"));
+
+    const nowMs = to.getTime();
+    const expiring = expiringBatches.map((b) => {
+      const expiryMs = b.expiryDate.getTime();
+      return {
+        batchId: b.id,
+        batchNumber: b.batchNumber,
+        productName: b.product.name,
+        unitType: b.product.unitType,
+        quantity: b.quantity,
+        costPrice: Number(b.costPrice),
+        expiryDate: b.expiryDate.toISOString(),
+        daysLeft: Math.ceil((expiryMs - nowMs) / 86_400_000),
+        expired: expiryMs < nowMs,
+      };
+    });
+
     const receipts = confirmedPeriod.map((item) => ({
       orderNumber: item.order.orderNumber,
       confirmedAt:
@@ -263,6 +349,9 @@ export async function GET(request: Request) {
       summary,
       products,
       receipts,
+      outOfStock,
+      expiring,
+      expiryHorizonDays: horizonDays,
     });
   } catch (error) {
     console.error("[GET /api/reception-report]", error);
