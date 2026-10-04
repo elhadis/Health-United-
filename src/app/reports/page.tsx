@@ -93,6 +93,15 @@ type SaleItemDetail = {
   costPrice: number | string;
   lineTotal: number | string;
   lineProfit: number | string;
+  product?: { category?: string | null } | null;
+};
+
+type CategoryFilter = "ALL" | "HUMAN" | "VETERINARY";
+
+const CATEGORY_FILTER_LABELS: Record<CategoryFilter, { ar: string; en: string }> = {
+  ALL: { ar: "الكل", en: "All" },
+  HUMAN: { ar: "بشري", en: "Human" },
+  VETERINARY: { ar: "بيطري", en: "Veterinary" },
 };
 
 type SaleDetail = {
@@ -221,6 +230,42 @@ export default function ReportsPage() {
     [sales]
   );
 
+  const [drillCategory, setDrillCategory] = useState<CategoryFilter>("ALL");
+
+  /** Sales narrowed to items of the selected category, with totals recomputed from those lines. */
+  const modalSales = useMemo(() => {
+    if (drillCategory === "ALL") return sales;
+    const result: SaleDetail[] = [];
+    for (const sale of sales) {
+      const items = (sale.items ?? []).filter(
+        (item) => item.product?.category === drillCategory
+      );
+      if (items.length === 0) continue;
+      result.push({
+        ...sale,
+        items,
+        total: items.reduce((s, i) => s + Number(i.lineTotal || 0), 0),
+        profit: items.reduce((s, i) => s + Number(i.lineProfit || 0), 0),
+      });
+    }
+    return result;
+  }, [sales, drillCategory]);
+
+  const alertLow = useMemo(
+    () =>
+      (summary?.lowStock ?? []).filter(
+        (p) => drillCategory === "ALL" || p.category === drillCategory
+      ),
+    [summary, drillCategory]
+  );
+  const alertExpiry = useMemo(
+    () =>
+      (summary?.nearExpiry ?? []).filter(
+        (p) => drillCategory === "ALL" || p.category === drillCategory
+      ),
+    [summary, drillCategory]
+  );
+
   const profitRows = useMemo(() => {
     const rows: Array<{
       receiptNumber: string;
@@ -231,7 +276,7 @@ export default function ReportsPage() {
       lineProfit: number;
       createdAt: string;
     }> = [];
-    for (const sale of sales) {
+    for (const sale of modalSales) {
       for (const item of sale.items ?? []) {
         rows.push({
           receiptNumber: sale.receiptNumber,
@@ -245,14 +290,14 @@ export default function ReportsPage() {
       }
     }
     return rows;
-  }, [sales]);
+  }, [modalSales]);
 
   const salesTotals = useMemo(
     () => ({
-      amount: sales.reduce((s, x) => s + Number(x.total || 0), 0),
-      count: sales.length,
+      amount: modalSales.reduce((s, x) => s + Number(x.total || 0), 0),
+      count: modalSales.length,
     }),
-    [sales]
+    [modalSales]
   );
 
   const profitTotals = useMemo(() => {
@@ -268,8 +313,8 @@ export default function ReportsPage() {
   }, [profitRows]);
 
   const alertTotals = useMemo(() => {
-    const low = summary?.lowStock ?? [];
-    const exp = summary?.nearExpiry ?? [];
+    const low = alertLow;
+    const exp = alertExpiry;
     const now = Date.now();
     const valueOf = (p: { availableQty: number; costPrice?: number }) =>
       Number(p.availableQty || 0) * Number(p.costPrice || 0);
@@ -284,33 +329,82 @@ export default function ReportsPage() {
       lowValue: low.reduce((s, p) => s + valueOf(p), 0),
       expiryValue: exp.reduce((s, p) => s + valueOf(p), 0),
     };
-  }, [summary]);
+  }, [alertLow, alertExpiry]);
 
   const [pdfBusy, setPdfBusy] = useState(false);
   const [pdfError, setPdfError] = useState<string | null>(null);
 
   const exportDrillPdf = async () => {
-    if (drillModal !== "sales" && drillModal !== "profit" && drillModal !== "alerts") {
+    if (
+      drillModal !== "sales" &&
+      drillModal !== "profit" &&
+      drillModal !== "invoices" &&
+      drillModal !== "alerts"
+    ) {
       return;
     }
     setPdfBusy(true);
     setPdfError(null);
     try {
       const { from, to } = getRangeBounds(range);
+      const categoryMeta = {
+        label: "Category / التصنيف",
+        value: `${CATEGORY_FILTER_LABELS[drillCategory].en} · ${CATEGORY_FILTER_LABELS[drillCategory].ar}`,
+      };
       const periodMeta = [
         {
           label: "Period / الفترة",
           value: `${RANGE_LABELS_EN[range]} · ${rangeLabel(range)}`,
         },
         { label: "Range / النطاق", value: `${pdfDate(from)} - ${pdfDate(to)}` },
+        categoryMeta,
       ];
       const base = {
         reference: `RPT-${Date.now().toString(36).toUpperCase()}`,
         date: pdfDateTime(new Date().toISOString()),
       };
       const stamp = new Date().toISOString().slice(0, 10);
+      const catSuffix = drillCategory === "ALL" ? "" : `-${drillCategory.toLowerCase()}`;
 
-      if (drillModal === "sales") {
+      if (drillModal === "invoices") {
+        await downloadTabularReportPdf(
+          {
+            ...base,
+            title: "Invoices Register",
+            titleAr: "سجل الفواتير",
+            meta: periodMeta,
+            summaryCards: [
+              { labelEn: "Invoices", labelAr: "إجمالي الفواتير", value: String(salesTotals.count) },
+              { labelEn: "Total Amount", labelAr: "إجمالي المبلغ", value: pdfMoney(salesTotals.amount) },
+              {
+                labelEn: "Net Profit",
+                labelAr: "صافي الربح",
+                value: pdfMoney(modalSales.reduce((s, x) => s + Number(x.profit || 0), 0)),
+              },
+            ],
+            sections: [
+              {
+                columns: [
+                  { en: "Invoice No", ar: "رقم الفاتورة", width: 0.2 },
+                  { en: "Date", ar: "التاريخ", width: 0.2, align: "center" },
+                  { en: "Cashier", ar: "الكاشير", width: 0.22 },
+                  { en: "Payment", ar: "الدفع", width: 0.18, align: "center" },
+                  { en: "Total", ar: "الإجمالي", width: 0.2, align: "right" },
+                ],
+                rows: modalSales.map((sale) => [
+                  sale.receiptNumber,
+                  pdfDateTime(sale.createdAt),
+                  sale.cashier?.name ?? "-",
+                  pdfPaymentLabel(sale),
+                  pdfMoney(Number(sale.total)),
+                ]),
+                emptyText: "لا توجد فواتير في هذه الفترة",
+              },
+            ],
+          },
+          `invoices-${range}${catSuffix}-${stamp}.pdf`
+        );
+      } else if (drillModal === "sales") {
         await downloadTabularReportPdf(
           {
             ...base,
@@ -338,7 +432,7 @@ export default function ReportsPage() {
                   { en: "Units", ar: "الوحدات", width: 0.1, align: "center" },
                   { en: "Total", ar: "الإجمالي", width: 0.16, align: "right" },
                 ],
-                rows: sales.map((sale) => [
+                rows: modalSales.map((sale) => [
                   sale.receiptNumber,
                   pdfDateTime(sale.createdAt),
                   sale.cashier?.name ?? "-",
@@ -350,7 +444,7 @@ export default function ReportsPage() {
               },
             ],
           },
-          `sales-details-${range}-${stamp}.pdf`
+          `sales-details-${range}${catSuffix}-${stamp}.pdf`
         );
       } else if (drillModal === "profit") {
         await downloadTabularReportPdf(
@@ -358,7 +452,7 @@ export default function ReportsPage() {
             ...base,
             title: "Net Profit Details Report",
             titleAr: "تقرير تفاصيل صافي الربح",
-            meta: [...periodMeta, { label: "Receipts / الفواتير", value: String(sales.length) }],
+            meta: [...periodMeta, { label: "Receipts / الفواتير", value: String(modalSales.length) }],
             summaryCards: [
               { labelEn: "Revenue", labelAr: "إجمالي البيع", value: pdfMoney(profitTotals.revenue) },
               { labelEn: "Cost", labelAr: "إجمالي التكلفة", value: pdfMoney(profitTotals.cost) },
@@ -388,7 +482,7 @@ export default function ReportsPage() {
               },
             ],
           },
-          `net-profit-${range}-${stamp}.pdf`
+          `net-profit-${range}${catSuffix}-${stamp}.pdf`
         );
       } else if (summary) {
         const now = Date.now();
@@ -398,6 +492,7 @@ export default function ReportsPage() {
             title: "Stock Alerts Report",
             titleAr: "تقرير تنبيهات المخزون والصلاحية",
             meta: [
+              categoryMeta,
               { label: "Low Stock / كمية منخفضة", value: String(alertTotals.lowCount) },
               { label: "Near Expiry / قرب الانتهاء", value: String(alertTotals.expiryCount) },
               { label: "Expired / منتهية", value: String(alertTotals.expiredCount) },
@@ -418,7 +513,7 @@ export default function ReportsPage() {
                   { en: "Threshold", ar: "الحد", width: 0.12, align: "center" },
                   { en: "Stock Value", ar: "القيمة", width: 0.28, align: "right" },
                 ],
-                rows: summary.lowStock.map((p) => [
+                rows: alertLow.map((p) => [
                   p.name,
                   p.batchNumber ?? "-",
                   String(p.availableQty),
@@ -438,7 +533,7 @@ export default function ReportsPage() {
                   { en: "Status", ar: "الحالة", width: 0.14, align: "center" },
                   { en: "Value at Risk", ar: "القيمة", width: 0.18, align: "right" },
                 ],
-                rows: summary.nearExpiry.map((p) => [
+                rows: alertExpiry.map((p) => [
                   p.name,
                   p.batchNumber ?? "-",
                   String(p.availableQty),
@@ -451,7 +546,7 @@ export default function ReportsPage() {
             ],
             notes: "القيم محسوبة بسعر تكلفة الدفعة",
           },
-          `stock-alerts-${stamp}.pdf`
+          `stock-alerts${catSuffix}-${stamp}.pdf`
         );
       }
     } catch (err) {
@@ -463,7 +558,10 @@ export default function ReportsPage() {
   };
 
   const hasDrillFooter =
-    drillModal === "sales" || drillModal === "profit" || drillModal === "alerts";
+    drillModal === "sales" ||
+    drillModal === "profit" ||
+    drillModal === "invoices" ||
+    drillModal === "alerts";
 
   const confirmDeleteSale = async () => {
     if (!deleteSaleId) return;
@@ -899,6 +997,7 @@ export default function ReportsPage() {
           if (!open) {
             setDrillModal(null);
             setPdfError(null);
+            setDrillCategory("ALL");
           }
         }}
       >
@@ -916,10 +1015,26 @@ export default function ReportsPage() {
             </DialogTitle>
           </DialogHeader>
 
+          {hasDrillFooter && (
+            <div className="flex flex-wrap gap-2">
+              {(["ALL", "HUMAN", "VETERINARY"] as const).map((c) => (
+                <Button
+                  key={c}
+                  type="button"
+                  size="sm"
+                  variant={drillCategory === c ? "default" : "outline"}
+                  onClick={() => setDrillCategory(c)}
+                >
+                  {CATEGORY_FILTER_LABELS[c].ar}
+                </Button>
+              ))}
+            </div>
+          )}
+
           <div
             className={cn(
               "overflow-y-auto",
-              hasDrillFooter ? "max-h-[55vh]" : "max-h-[65vh]"
+              hasDrillFooter ? "max-h-[50vh]" : "max-h-[65vh]"
             )}
           >
             {loadingSales &&
@@ -932,12 +1047,12 @@ export default function ReportsPage() {
 
             {drillModal === "sales" && !loadingSales && (
               <div className="space-y-3">
-                {sales.length === 0 && (
+                {modalSales.length === 0 && (
                   <p className="text-sm text-slate-500">
                     لا توجد مبيعات في هذه الفترة
                   </p>
                 )}
-                {sales.map((sale) => (
+                {modalSales.map((sale) => (
                   <div
                     key={sale.id}
                     className="rounded-xl border border-slate-100 p-3"
@@ -1025,7 +1140,7 @@ export default function ReportsPage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {sales.map((sale) => (
+                    {modalSales.map((sale) => (
                       <tr key={sale.id} className="border-t border-slate-100">
                         <td className="px-3 py-2 font-medium">
                           {sale.receiptNumber}
@@ -1047,7 +1162,7 @@ export default function ReportsPage() {
                     ))}
                   </tbody>
                 </table>
-                {sales.length === 0 && (
+                {modalSales.length === 0 && (
                   <p className="py-4 text-sm text-slate-500">
                     لا توجد فواتير في هذه الفترة
                   </p>
@@ -1072,7 +1187,7 @@ export default function ReportsPage() {
                         </tr>
                       </thead>
                       <tbody>
-                        {summary.lowStock.map((p) => (
+                        {alertLow.map((p) => (
                           <tr
                             key={`alert-low-${p.batchId ?? p.id}-${p.name}`}
                             className="border-t border-slate-100"
@@ -1091,7 +1206,7 @@ export default function ReportsPage() {
                         ))}
                       </tbody>
                     </table>
-                    {!summary.lowStock.length && (
+                    {!alertLow.length && (
                       <p className="py-2 text-sm text-slate-500">
                         لا توجد عناصر منخفضة المخزون
                       </p>
@@ -1113,7 +1228,7 @@ export default function ReportsPage() {
                         </tr>
                       </thead>
                       <tbody>
-                        {summary.nearExpiry.map((p) => (
+                        {alertExpiry.map((p) => (
                           <tr
                             key={`alert-exp-${p.batchId ?? p.id}-${p.expiryDate}`}
                             className="border-t border-slate-100"
@@ -1130,7 +1245,7 @@ export default function ReportsPage() {
                         ))}
                       </tbody>
                     </table>
-                    {!summary.nearExpiry.length && (
+                    {!alertExpiry.length && (
                       <p className="py-2 text-sm text-slate-500">
                         لا توجد عناصر قريبة من انتهاء الصلاحية
                       </p>
@@ -1220,6 +1335,20 @@ export default function ReportsPage() {
             <div className="sticky bottom-0 mt-3 space-y-2 border-t border-slate-100 bg-white pt-3">
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div className="flex flex-wrap gap-2 text-sm">
+                  {drillModal === "invoices" && (
+                    <>
+                      <div className="rounded-lg bg-slate-50 px-3 py-1.5">
+                        <span className="text-slate-500">إجمالي الفواتير: </span>
+                        <span className="font-bold">{salesTotals.count}</span>
+                      </div>
+                      <div className="rounded-lg bg-primary/5 px-3 py-1.5">
+                        <span className="text-slate-500">إجمالي المبلغ: </span>
+                        <span className="font-bold text-primary">
+                          {formatCurrency(salesTotals.amount)}
+                        </span>
+                      </div>
+                    </>
+                  )}
                   {drillModal === "sales" && (
                     <>
                       <div className="rounded-lg bg-primary/5 px-3 py-1.5">

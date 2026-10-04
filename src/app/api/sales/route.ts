@@ -76,7 +76,11 @@ export async function GET(request: Request) {
             }
           : {}),
       },
-      include: { items: true, cashier: true, pharmacy: true },
+      include: {
+        items: { include: { product: { select: { category: true } } } },
+        cashier: true,
+        pharmacy: true,
+      },
       orderBy: { createdAt: "desc" },
       take: 100,
     });
