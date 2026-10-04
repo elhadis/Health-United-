@@ -75,8 +75,25 @@ type IssuedInvoice = {
     quantity: number;
     unitPrice: number;
     lineTotal: number;
+    category?: string | null;
   }>;
 };
+
+type InvoiceTimeframe = "all" | "today" | "week" | "month";
+type InvoiceCategory = "ALL" | "HUMAN" | "VETERINARY";
+
+const INVOICE_TIMEFRAMES: Array<[InvoiceTimeframe, string, string]> = [
+  ["all", "كل الفترات", "All"],
+  ["today", "يومي", "Daily"],
+  ["week", "أسبوعي", "Weekly"],
+  ["month", "شهري", "Monthly"],
+];
+
+const INVOICE_CATEGORIES: Array<[InvoiceCategory, string, string]> = [
+  ["ALL", "الكل", "All"],
+  ["HUMAN", "بشري", "Human"],
+  ["VETERINARY", "بيطري", "Veterinary"],
+];
 
 type PdfPreviewState = {
   title: string;
@@ -186,8 +203,10 @@ async function fetchSupplierInvoices() {
   return (data.invoices ?? []) as SupplierInvoiceRow[];
 }
 
-async function fetchIssuedInvoices() {
-  const res = await fetch("/api/sales");
+async function fetchIssuedInvoices(fromIso?: string) {
+  const res = await fetch(
+    fromIso ? `/api/sales?from=${encodeURIComponent(fromIso)}` : "/api/sales"
+  );
   const data = await res.json();
   if (!res.ok) throw new Error(data.error || "فشل جلب الفواتير");
   const sales = data.sales ?? [];
@@ -206,6 +225,7 @@ async function fetchIssuedInvoices() {
         quantity: number;
         unitPrice: number | string;
         lineTotal: number | string;
+        product?: { category?: string | null } | null;
       }>;
     }) =>
       ({
@@ -222,6 +242,7 @@ async function fetchIssuedInvoices() {
           quantity: i.quantity,
           unitPrice: Number(i.unitPrice),
           lineTotal: Number(i.lineTotal),
+          category: i.product?.category ?? null,
         })),
       }) as IssuedInvoice
   );
@@ -289,10 +310,33 @@ export function FinanceTabs() {
     }
   };
 
+  const [invoiceTimeframe, setInvoiceTimeframe] = useState<InvoiceTimeframe>("all");
+  const [invoiceCategory, setInvoiceCategory] = useState<InvoiceCategory>("ALL");
+  const [exportingInvoices, setExportingInvoices] = useState(false);
+  const invoiceBounds = useMemo(
+    () => periodBounds(invoiceTimeframe, "", ""),
+    [invoiceTimeframe]
+  );
+
   const { data: invoices = [], isLoading: loadingInvoices } = useQuery({
-    queryKey: ["issued-invoices"],
-    queryFn: fetchIssuedInvoices,
+    queryKey: ["issued-invoices", invoiceTimeframe],
+    queryFn: () => fetchIssuedInvoices(invoiceBounds?.start.toISOString()),
   });
+
+  const filteredInvoices = useMemo(
+    () =>
+      (invoices as IssuedInvoice[]).filter((inv) => {
+        if (invoiceBounds) {
+          const t = new Date(inv.createdAt).getTime();
+          if (t < invoiceBounds.start.getTime() || t > invoiceBounds.end.getTime()) {
+            return false;
+          }
+        }
+        if (invoiceCategory === "ALL") return true;
+        return inv.items.some((i) => i.category === invoiceCategory);
+      }),
+    [invoices, invoiceBounds, invoiceCategory]
+  );
 
   const supplierNames = useMemo(
     () =>
@@ -340,9 +384,74 @@ export function FinanceTabs() {
   }, [filteredRows, bounds]);
 
   const invoiceTotal = useMemo(
-    () => invoices.reduce((s: number, i: IssuedInvoice) => s + Number(i.total), 0),
-    [invoices]
+    () => filteredInvoices.reduce((s: number, i: IssuedInvoice) => s + Number(i.total), 0),
+    [filteredInvoices]
   );
+
+  const exportInvoicesPdf = async () => {
+    setExportingInvoices(true);
+    try {
+      const tf = INVOICE_TIMEFRAMES.find(([k]) => k === invoiceTimeframe)!;
+      const cat = INVOICE_CATEGORIES.find(([k]) => k === invoiceCategory)!;
+      await downloadTabularReportPdf(
+        {
+          title: "Issued Invoices Report",
+          titleAr: "تقرير الفواتير الصادرة",
+          reference: `INV-${Date.now().toString(36).toUpperCase()}`,
+          date: new Date().toLocaleString("en-GB", {
+            day: "2-digit",
+            month: "2-digit",
+            year: "numeric",
+            hour: "2-digit",
+            minute: "2-digit",
+          }),
+          meta: [
+            { label: "Period / الفترة", value: `${tf[2]} · ${tf[1]}` },
+            {
+              label: "Range / النطاق",
+              value: invoiceBounds
+                ? `${invoiceBounds.start.toLocaleDateString("en-GB")} - ${invoiceBounds.end.toLocaleDateString("en-GB")}`
+                : "All records · كل السجلات",
+            },
+            { label: "Category / التصنيف", value: `${cat[2]} · ${cat[1]}` },
+          ],
+          summaryCards: [
+            { labelEn: "Invoices", labelAr: "عدد الفواتير", value: String(filteredInvoices.length) },
+            { labelEn: "Total", labelAr: "إجمالي الفواتير", value: money(invoiceTotal) },
+            {
+              labelEn: "Average",
+              labelAr: "متوسط الفاتورة",
+              value: money(filteredInvoices.length ? invoiceTotal / filteredInvoices.length : 0),
+            },
+          ],
+          sections: [
+            {
+              columns: [
+                { en: "Invoice", ar: "الفاتورة", width: 0.18 },
+                { en: "Party", ar: "الجهة", width: 0.22 },
+                { en: "Items", ar: "الأصناف", width: 0.1, align: "center" },
+                { en: "Units", ar: "الوحدات", width: 0.1, align: "center" },
+                { en: "Total", ar: "الإجمالي", width: 0.22, align: "right" },
+                { en: "Date", ar: "التاريخ", width: 0.18, align: "center" },
+              ],
+              rows: filteredInvoices.map((inv) => [
+                inv.receiptNumber,
+                inv.pharmacyName,
+                String(inv.items.length),
+                String(inv.items.reduce((s, i) => s + Number(i.quantity || 0), 0)),
+                money(inv.total),
+                dateEn(inv.createdAt),
+              ]),
+              emptyText: "لا توجد فواتير مطابقة",
+            },
+          ],
+        },
+        `issued-invoices-${invoiceTimeframe}${invoiceCategory === "ALL" ? "" : `-${invoiceCategory.toLowerCase()}`}-${todayInput()}.pdf`
+      );
+    } finally {
+      setExportingInvoices(false);
+    }
+  };
 
   const createInvoice = async (e: FormEvent) => {
     e.preventDefault();
@@ -970,8 +1079,50 @@ export function FinanceTabs() {
             </CardTitle>
             <p className="mt-1 text-sm text-slate-500">
               إجمالي الفواتير: {formatCurrency(invoiceTotal)} ·{" "}
-              {invoices.length} فاتورة
+              {filteredInvoices.length} فاتورة
             </p>
+            {isSuperAdmin && (
+              <div className="mt-3 flex flex-wrap items-center gap-2">
+                {INVOICE_TIMEFRAMES.map(([key, label]) => (
+                  <Button
+                    key={key}
+                    type="button"
+                    size="sm"
+                    variant={invoiceTimeframe === key ? "default" : "outline"}
+                    onClick={() => setInvoiceTimeframe(key)}
+                  >
+                    {label}
+                  </Button>
+                ))}
+                <span className="mx-1 h-5 w-px bg-slate-200" />
+                {INVOICE_CATEGORIES.map(([key, label]) => (
+                  <Button
+                    key={key}
+                    type="button"
+                    size="sm"
+                    variant={invoiceCategory === key ? "default" : "outline"}
+                    onClick={() => setInvoiceCategory(key)}
+                  >
+                    {label}
+                  </Button>
+                ))}
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="ms-auto"
+                  disabled={exportingInvoices || loadingInvoices}
+                  onClick={() => void exportInvoicesPdf()}
+                >
+                  {exportingInvoices ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <Download className="h-4 w-4" />
+                  )}
+                  تصدير PDF
+                </Button>
+              </div>
+            )}
           </CardHeader>
           <CardContent className="table-scroll overflow-x-auto p-0">
             {loadingInvoices ? (
@@ -989,7 +1140,7 @@ export function FinanceTabs() {
                   </tr>
                 </thead>
                 <tbody>
-                  {invoices.map((inv: IssuedInvoice) => (
+                  {filteredInvoices.map((inv: IssuedInvoice) => (
                     <tr key={inv.id} className="border-t border-slate-100">
                       <td className="px-4 py-3 font-medium">
                         {inv.receiptNumber}
@@ -1031,7 +1182,7 @@ export function FinanceTabs() {
                 </tbody>
               </table>
             )}
-            {!loadingInvoices && invoices.length === 0 && (
+            {!loadingInvoices && filteredInvoices.length === 0 && (
               <p className="p-5 text-sm text-slate-500">لا توجد فواتير صادرة</p>
             )}
           </CardContent>
