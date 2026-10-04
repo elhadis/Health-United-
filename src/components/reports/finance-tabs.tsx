@@ -12,7 +12,10 @@ import {
   Plus,
   Loader2,
   History,
+  Trash2,
 } from "lucide-react";
+import { ConfirmDeleteDialog } from "@/components/ui/confirm-delete-dialog";
+import { useAuthStore } from "@/lib/stores/auth-store";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -251,6 +254,40 @@ export function FinanceTabs() {
     queryKey: ["supplier-invoices"],
     queryFn: fetchSupplierInvoices,
   });
+
+  const isSuperAdmin = useAuthStore((s) => s.user?.role === "ADMINISTRATOR");
+  const [deletePaymentId, setDeletePaymentId] = useState<string | null>(null);
+  const [paymentMsg, setPaymentMsg] = useState<{ ok: boolean; text: string } | null>(null);
+
+  const confirmDeletePayment = async () => {
+    const id = deletePaymentId;
+    if (!id) return;
+    try {
+      const res = await fetch(`/api/payments/${encodeURIComponent(id)}`, {
+        method: "DELETE",
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setPaymentMsg({ ok: false, text: data.error || "فشل حذف الدفعة" });
+        return;
+      }
+      queryClient.setQueryData<SupplierInvoiceRow[]>(["supplier-invoices"], (prev) =>
+        (prev ?? [])
+          .filter((row) => row.id !== `legacy-${id}`)
+          .map((row) =>
+            row.payments.some((p) => p.id === id)
+              ? { ...row, payments: row.payments.filter((p) => p.id !== id) }
+              : row
+          )
+      );
+      setPaymentMsg({ ok: true, text: "تم حذف الدفعة وإعادة احتساب الرصيد" });
+      void queryClient.invalidateQueries({ queryKey: ["supplier-invoices"] });
+    } catch {
+      setPaymentMsg({ ok: false, text: "تعذر الاتصال بالخادم" });
+    } finally {
+      setDeletePaymentId(null);
+    }
+  };
 
   const { data: invoices = [], isLoading: loadingInvoices } = useQuery({
     queryKey: ["issued-invoices"],
@@ -747,6 +784,17 @@ export function FinanceTabs() {
                 </>
               )}
             </div>
+            {paymentMsg && (
+              <p
+                className={
+                  paymentMsg.ok
+                    ? "mx-4 mb-3 rounded-lg bg-success/10 px-3 py-2 text-sm text-emerald-700"
+                    : "mx-4 mb-3 rounded-lg bg-danger/10 px-3 py-2 text-sm text-red-700"
+                }
+              >
+                {paymentMsg.text}
+              </p>
+            )}
             {loadingPayments ? (
               <p className="p-5 text-sm text-slate-500">جاري التحميل...</p>
             ) : (
@@ -876,6 +924,21 @@ export function FinanceTabs() {
                                         </span>
                                         {p.notes && (
                                           <span className="text-slate-400">{p.notes}</span>
+                                        )}
+                                        {isSuperAdmin && (
+                                          <Button
+                                            type="button"
+                                            variant="danger"
+                                            size="sm"
+                                            className="ms-auto h-7 px-2 text-xs"
+                                            onClick={() => {
+                                              setPaymentMsg(null);
+                                              setDeletePaymentId(p.id);
+                                            }}
+                                          >
+                                            <Trash2 className="h-3.5 w-3.5" />
+                                            حذف
+                                          </Button>
                                         )}
                                       </li>
                                     );
@@ -1265,6 +1328,16 @@ export function FinanceTabs() {
           )}
         </DialogContent>
       </Dialog>
+
+      <ConfirmDeleteDialog
+        open={!!deletePaymentId}
+        onOpenChange={(open) => {
+          if (!open) setDeletePaymentId(null);
+        }}
+        onConfirm={confirmDeletePayment}
+        title="حذف دفعة"
+        description="هل أنت تأكد من حذف هذه الدفعة نهائياً؟"
+      />
     </div>
   );
 }
